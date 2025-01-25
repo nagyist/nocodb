@@ -139,13 +139,14 @@ const onTabPress = (e: KeyboardEvent) => {
     @mouseleave="onMouseleave"
     @focus="onWrapperFocus"
   >
+    <!-- eslint-disable vue/use-v-on-exact -->
     <input
       v-if="!readOnly && editEnabled && (isExpandedFormOpen ? expandedEditEnabled || !percentMeta.is_progress : true)"
       :ref="focus"
       v-model="vModel"
       class="nc-cell-field w-full !border-none !outline-none focus:ring-0 py-1"
       :type="inputType"
-      :placeholder="placeholder !== undefined ? placeholder : isEditColumn ? $t('labels.optional') : ''"
+      :placeholder="placeholder"
       @blur="onBlur"
       @focus="onFocus"
       @keydown.down.stop
@@ -154,6 +155,7 @@ const onTabPress = (e: KeyboardEvent) => {
       @keydown.up.stop
       @keydown.delete.stop
       @keydown.tab="onTabPress"
+      @keydown.alt.stop
       @selectstart.capture.stop
       @mousedown.stop
     />

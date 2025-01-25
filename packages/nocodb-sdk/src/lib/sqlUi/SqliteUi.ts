@@ -1,5 +1,6 @@
 import UITypes from '../UITypes';
 import { IDType } from './index';
+import { ColumnType } from '~/lib';
 
 const dbTypes = [
   'int',
@@ -163,6 +164,29 @@ export class SqliteUi {
         dtxs: '',
         altered: 1,
         uidt: UITypes.LastModifiedBy,
+        uip: '',
+        uicn: '',
+        system: true,
+      },
+      {
+        column_name: 'nc_order',
+        title: 'nc_order',
+        dt: 'real',
+        dtx: 'specificType',
+        ct: 'real',
+        nrqd: true,
+        rqd: false,
+        ck: false,
+        pk: false,
+        un: false,
+        ai: false,
+        clen: null,
+        np: null,
+        ns: null,
+        dtxp: '',
+        dtxs: '',
+        altered: 1,
+        uidt: UITypes.Order,
         uip: '',
         uicn: '',
         system: true,
@@ -556,7 +580,7 @@ export class SqliteUi {
     }
   }
 
-  static getDataTypeForUiType(col: { uidt: UITypes; }, idType?: IDType) {
+  static getDataTypeForUiType(col: { uidt: UITypes }, idType?: IDType) {
     const colProp: any = {};
     switch (col.uidt) {
       case 'ID':
@@ -690,6 +714,9 @@ export class SqliteUi {
       case 'JSON':
         colProp.dt = 'text';
         break;
+      case 'Order':
+        colProp.dt = 'real';
+        break;
       default:
         colProp.dt = 'varchar';
         break;
@@ -697,7 +724,7 @@ export class SqliteUi {
     return colProp;
   }
 
-  static getDataTypeListForUiType(col: { uidt: UITypes; }, idType?: IDType) {
+  static getDataTypeListForUiType(col: { uidt: UITypes }, idType?: IDType) {
     switch (col.uidt) {
       case 'ID':
         if (idType === 'AG') {
@@ -859,6 +886,7 @@ export class SqliteUi {
         ];
 
       case 'Formula':
+      case 'Button':
         return ['text', 'varchar'];
 
       case 'Rollup':
@@ -906,8 +934,6 @@ export class SqliteUi {
         return ['text'];
       case 'JSON':
         return ['text'];
-
-      case 'Button':
       default:
         return dbTypes;
     }
@@ -923,9 +949,26 @@ export class SqliteUi {
       'COUNTA',
       'COUNT',
       'DATESTR',
-      'DAY',
-      'MONTH',
-      'HOUR',
     ];
+  }
+
+  static getCurrentDateDefault(_col: Partial<ColumnType>) {
+    return null;
+  }
+
+  static isEqual(dataType1: string, dataType2: string) {
+    if (dataType1 === dataType2) return true;
+
+    const abstractType1 = this.getAbstractType({ dt: dataType1 });
+    const abstractType2 = this.getAbstractType({ dt: dataType2 });
+
+    if (
+      abstractType1 &&
+      abstractType1 === abstractType2 &&
+      ['integer', 'float'].includes(abstractType1)
+    )
+      return true;
+
+    return false;
   }
 }

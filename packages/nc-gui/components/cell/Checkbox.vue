@@ -25,6 +25,8 @@ const isEditColumnMenu = inject(EditColumnInj, ref(false))
 
 const isGallery = inject(IsGalleryInj, ref(false))
 
+const isKanban = inject(IsKanbanInj, ref(false))
+
 const readOnly = inject(ReadonlyInj)
 
 const isExpandedFormOpen = inject(IsExpandedFormOpenInj, ref(false))
@@ -36,13 +38,12 @@ const isSurveyForm = inject(IsSurveyFormInj, ref(false))
 const isGrid = inject(IsGridInj, ref(false))
 
 const checkboxMeta = computed(() => {
+  const icon = extractCheckboxIcon(column?.value?.meta)
+
   return {
-    icon: {
-      checked: 'mdi-check-circle-outline',
-      unchecked: 'mdi-checkbox-blank-circle-outline',
-    },
     color: 'primary',
     ...parseProp(column?.value?.meta),
+    icon,
   }
 })
 
@@ -110,11 +111,11 @@ useSelectedCellKeyupListener(active, (e) => {
     <div
       class="flex items-center"
       :class="{
-        'w-full justify-start': isEditColumnMenu || isGallery || isForm,
-        'justify-center': !isEditColumnMenu && !isGallery && !isForm,
+        'w-full justify-start': isEditColumnMenu || isGallery || isKanban || isForm,
+        'justify-center': !isEditColumnMenu && !isGallery && !isKanban && !isForm,
         'py-2': isEditColumnMenu,
       }"
-      @click="onClick(true)"
+      @click.stop="onClick(true)"
     >
       <Transition name="layout" mode="out-in" :duration="100">
         <component

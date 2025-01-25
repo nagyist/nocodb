@@ -11,13 +11,18 @@ import isSameOrAfter from 'dayjs/plugin/isSameOrAfter';
 import NcPluginMgrv2 from './NcPluginMgrv2';
 import type { HookLogType } from 'nocodb-sdk';
 import type { Column, FormView, Hook, Model, View } from '~/models';
+import type { NcContext } from '~/interface/config';
 import { Filter, HookLog, Source } from '~/models';
 
 dayjs.extend(isBetween);
 dayjs.extend(isSameOrBefore);
 dayjs.extend(isSameOrAfter);
 
-Handlebars.registerHelper('json', function (context) {
+Handlebars.registerHelper('json', function (context, pretty = false) {
+  if (pretty === true || pretty === 'true') {
+    // Pretty print with 2-space indentation
+    return JSON.stringify(context, null, 2);
+  }
   return JSON.stringify(context);
 });
 
@@ -28,13 +33,19 @@ export function parseBody(template: string, data: any): string {
     return template;
   }
 
-  return Handlebars.compile(template, { noEscape: true })({
-    data,
-    event: data,
-  });
+  try {
+    return Handlebars.compile(template, { noEscape: true })({
+      data,
+      event: data,
+    });
+  } catch (e) {
+    // if parsing fails then return the original template
+    return template;
+  }
 }
 
 export async function validateCondition(
+  context: NcContext,
   filters: Filter[],
   data: any,
   {
@@ -53,14 +64,15 @@ export async function validateCondition(
     let res;
     if (filter.is_group) {
       res = await validateCondition(
-        filter.children || (await filter.getChildren()),
+        context,
+        filter.children || (await filter.getChildren(context)),
         data,
         {
           client,
         },
       );
     } else {
-      const column = await filter.getColumn();
+      const column = await filter.getColumn(context);
       const field = column.title;
       let val = data[field];
       if (
@@ -215,88 +227,127 @@ export async function validateCondition(
             break;
         }
 
-        switch (filter.comparison_op) {
-          case 'eq':
-            res = val == filter.value;
-            break;
-          case 'neq':
-            res = val != filter.value;
-            break;
-          case 'like':
-            res =
-              data[field]
-                ?.toString?.()
-                ?.toLowerCase()
-                ?.indexOf(filter.value?.toLowerCase()) > -1;
-            break;
-          case 'nlike':
-            res =
-              data[field]
-                ?.toString?.()
-                ?.toLowerCase()
-                ?.indexOf(filter.value?.toLowerCase()) === -1;
-            break;
-          case 'empty':
-          case 'blank':
-            res =
-              data[field] === '' ||
-              data[field] === null ||
-              data[field] === undefined;
-            break;
-          case 'notempty':
-          case 'notblank':
-            res = !(
-              data[field] === '' ||
-              data[field] === null ||
-              data[field] === undefined
-            );
-            break;
-          case 'checked':
-            res = !!data[field];
-            break;
-          case 'notchecked':
-            res = !data[field];
-            break;
-          case 'null':
-            res = res = data[field] === null;
-            break;
-          case 'notnull':
-            res = data[field] !== null;
-            break;
-          case 'allof':
-            res = (
-              filter.value?.split(',').map((item) => item.trim()) ?? []
-            ).every((item) => (data[field]?.split(',') ?? []).includes(item));
-            break;
-          case 'anyof':
-            res = (
-              filter.value?.split(',').map((item) => item.trim()) ?? []
-            ).some((item) => (data[field]?.split(',') ?? []).includes(item));
-            break;
-          case 'nallof':
-            res = !(
-              filter.value?.split(',').map((item) => item.trim()) ?? []
-            ).every((item) => (data[field]?.split(',') ?? []).includes(item));
-            break;
-          case 'nanyof':
-            res = !(
-              filter.value?.split(',').map((item) => item.trim()) ?? []
-            ).some((item) => (data[field]?.split(',') ?? []).includes(item));
-            break;
-          case 'lt':
-            res = +data[field] < +filter.value;
-            break;
-          case 'lte':
-          case 'le':
-            res = +data[field] <= +filter.value;
-            break;
-          case 'gt':
-            res = +data[field] > +filter.value;
-            break;
-          case 'gte':
-          case 'ge':
-            res = +data[field] >= +filter.value;
-            break;
+        if (
+          [UITypes.User, UITypes.CreatedBy, UITypes.LastModifiedBy].includes(
+            column.uidt,
+          )
+        ) {
+          const userIds = Array.isArray(data[field])
+            ? data[field].map((user) => user.id)
+            : data[field]?.id
+            ? [data[field].id]
+            : [];
+
+          const filterValues = filter.value.split(',').map((v) => v.trim());
+
+          switch (filter.comparison_op) {
+            case 'anyof':
+              res = userIds.some((id) => filterValues.includes(id));
+              break;
+            case 'nanyof':
+              res = !userIds.some((id) => filterValues.includes(id));
+              break;
+            case 'allof':
+              res = filterValues.every((id) => userIds.includes(id));
+              break;
+            case 'nallof':
+              res = !filterValues.every((id) => userIds.includes(id));
+              break;
+            case 'empty':
+            case 'blank':
+              res = userIds.length === 0;
+              break;
+            case 'notempty':
+            case 'notblank':
+              res = userIds.length > 0;
+              break;
+            default:
+              res = false; // Unsupported operation for User fields
+          }
+        } else {
+          switch (filter.comparison_op) {
+            case 'eq':
+              res = val == filter.value;
+              break;
+            case 'neq':
+              res = val != filter.value;
+              break;
+            case 'like':
+              res =
+                data[field]
+                  ?.toString?.()
+                  ?.toLowerCase()
+                  ?.indexOf(filter.value?.toLowerCase()) > -1;
+              break;
+            case 'nlike':
+              res =
+                data[field]
+                  ?.toString?.()
+                  ?.toLowerCase()
+                  ?.indexOf(filter.value?.toLowerCase()) === -1;
+              break;
+            case 'empty':
+            case 'blank':
+              res =
+                data[field] === '' ||
+                data[field] === null ||
+                data[field] === undefined;
+              break;
+            case 'notempty':
+            case 'notblank':
+              res = !(
+                data[field] === '' ||
+                data[field] === null ||
+                data[field] === undefined
+              );
+              break;
+            case 'checked':
+              res = !!data[field];
+              break;
+            case 'notchecked':
+              res = !data[field];
+              break;
+            case 'null':
+              res = res = data[field] === null;
+              break;
+            case 'notnull':
+              res = data[field] !== null;
+              break;
+            case 'allof':
+              res = (
+                filter.value?.split(',').map((item) => item.trim()) ?? []
+              ).every((item) => (data[field]?.split(',') ?? []).includes(item));
+              break;
+            case 'anyof':
+              res = (
+                filter.value?.split(',').map((item) => item.trim()) ?? []
+              ).some((item) => (data[field]?.split(',') ?? []).includes(item));
+              break;
+            case 'nallof':
+              res = !(
+                filter.value?.split(',').map((item) => item.trim()) ?? []
+              ).every((item) => (data[field]?.split(',') ?? []).includes(item));
+              break;
+            case 'nanyof':
+              res = !(
+                filter.value?.split(',').map((item) => item.trim()) ?? []
+              ).some((item) => (data[field]?.split(',') ?? []).includes(item));
+              break;
+            case 'lt':
+              res = +data[field] < +filter.value;
+              break;
+            case 'lte':
+            case 'le':
+              res = +data[field] <= +filter.value;
+              break;
+            case 'gt':
+              res = +data[field] > +filter.value;
+              break;
+            case 'gte':
+            case 'ge':
+              res = +data[field] >= +filter.value;
+              break;
+          }
         }
       }
     }
@@ -360,11 +411,19 @@ export async function handleHttpWebHook(
   prevData,
   newData,
 ): Promise<any> {
+  if (!apiMeta) {
+    apiMeta = {};
+  }
+
   const contentType = apiMeta.headers?.find(
     (header) => header.name?.toLowerCase() === 'content-type' && header.enabled,
   );
 
   if (!contentType) {
+    if (!apiMeta.headers) {
+      apiMeta.headers = [];
+    }
+
     apiMeta.headers.push({
       name: 'Content-Type',
       enabled: true,
@@ -453,19 +512,35 @@ export function axiosRequestMake(_apiMeta, _user, data) {
 }
 
 export async function invokeWebhook(
-  hook: Hook,
-  model: Model,
-  view: View,
-  prevData,
-  newData,
-  user,
-  testFilters = null,
-  throwErrorOnFailure = false,
-  testHook = false,
+  context: NcContext,
+  param: {
+    hook: Hook;
+    model: Model;
+    view: View;
+    prevData;
+    newData;
+    user;
+    testFilters?;
+    throwErrorOnFailure?: boolean;
+    testHook?: boolean;
+  },
 ) {
+  const {
+    hook,
+    model,
+    view,
+    prevData,
+    user,
+    testFilters = null,
+    throwErrorOnFailure = false,
+    testHook = false,
+  } = param;
+
+  let { newData } = param;
+
   let hookLog: HookLogType;
   const startTime = process.hrtime();
-  const source = await Source.get(model.source_id);
+  const source = await Source.get(context, model.source_id);
   let notification;
   try {
     notification =
@@ -481,7 +556,7 @@ export async function invokeWebhook(
     }
 
     if (hook.condition && !testHook) {
-      const filters = testFilters || (await hook.getFilters());
+      const filters = testFilters || (await hook.getFilters(context));
 
       if (isBulkOperation) {
         const filteredData = [];
@@ -503,7 +578,8 @@ export async function invokeWebhook(
 
           if (
             await validateCondition(
-              testFilters || (await hook.getFilters()),
+              context,
+              testFilters || (await hook.getFilters(context)),
               data,
               { client: source?.type },
             )
@@ -521,13 +597,16 @@ export async function invokeWebhook(
         if (
           prevData &&
           filters.length &&
-          (await validateCondition(filters, prevData, { client: source?.type }))
+          (await validateCondition(context, filters, prevData, {
+            client: source?.type,
+          }))
         ) {
           return;
         }
         if (
           !(await validateCondition(
-            testFilters || (await hook.getFilters()),
+            context,
+            testFilters || (await hook.getFilters(context)),
             newData,
             { client: source?.type },
           ))
@@ -660,7 +739,11 @@ export async function invokeWebhook(
       hookLog.execution_time = parseHrtimeToMilliSeconds(
         process.hrtime(startTime),
       );
-      HookLog.insert({ ...hookLog, test_call: testHook });
+      HookLog.insert(context, { ...hookLog, test_call: testHook }).catch(
+        (e) => {
+          logger.error(e.message, e.stack);
+        },
+      );
     }
   }
 }
@@ -681,16 +764,9 @@ export function _transformSubmittedFormDataForEmail(
       }
       transformedData[col.title] = (transformedData[col.title] || [])
         .map((attachment) => {
-          if (
-            ['jpeg', 'gif', 'png', 'apng', 'svg', 'bmp', 'ico', 'jpg'].includes(
-              attachment.title.split('.').pop(),
-            )
-          ) {
-            return `<a href="${attachment.url}" target="_blank"><img height="50px" src="${attachment.url}"/></a>`;
-          }
-          return `<a href="${attachment.url}" target="_blank">${attachment.title}</a>`;
+          return attachment.title;
         })
-        .join('&nbsp;');
+        .join('<br/>');
     } else if (
       transformedData[col.title] &&
       typeof transformedData[col.title] === 'object'

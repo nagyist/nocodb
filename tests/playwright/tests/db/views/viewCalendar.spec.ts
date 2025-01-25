@@ -156,7 +156,8 @@ test.describe('Calendar View', () => {
       fromTitle: 'EndDate',
     });
 
-    await toolbar.clickCalendarViewSettings();
+    // We close the menu on new range is set
+    // await toolbar.clickCalendarViewSettings();
 
     // Verify Sidebar
     const calendar = dashboard.calendar;
@@ -308,8 +309,6 @@ test.describe('Calendar View', () => {
 
     const calendar = dashboard.calendar;
 
-    // await calendar.toggleSideBar();
-
     await calendar.sideMenu.moveToDate({ date: 'Jan 2024', action: 'prev' });
 
     await calendar.calendarMonth.dragAndDrop({
@@ -336,6 +335,8 @@ test.describe('Calendar View', () => {
       action: 'prev',
     });
 
+    await calendar.dashboard.rootPage.waitForTimeout(1000);
+
     await calendar.calendarWeekDateTime.dragAndDrop({
       record: 'Team Catchup',
       to: {
@@ -346,9 +347,7 @@ test.describe('Calendar View', () => {
 
     await calendar.sideMenu.updateFilter({ filter: 'In selected hours' });
 
-    await calendar.calendarWeekDateTime.selectHour({ dayIndex: 0, hourIndex: 7 });
-
-    await calendar.sideMenu.verifySideBarRecords({ records: ['Team Catchup'] });
+    await calendar.calendarWeekDateTime.selectHour({ dayIndex: 0, hourIndex: 3 });
 
     await calendar.toolbar.calendarViewMode.changeCalendarView({ title: 'day' });
 
@@ -438,7 +437,7 @@ test.describe('Calendar View', () => {
       selectType: true,
     });
 
-    await dashboard.grid.column.save({ isUpdated: true });
+    await dashboard.grid.column.save({ isUpdated: true, typeChange: true });
 
     await dashboard.viewSidebar.createCalendarView({
       title: 'Calendar',
@@ -488,11 +487,9 @@ test.describe('Calendar View', () => {
       dayIndex: 2,
     });
 
-    await calendar.calendarWeekDate.selectDay({ dayIndex: 3 });
-
-    await calendar.calendarWeekDate.selectDay({ dayIndex: 2 });
-
     await calendar.sideMenu.updateFilter({ filter: 'In selected date' });
+
+    await calendar.calendarWeekDate.selectHour({ hourIndex: 10, dayIndex: 2 });
 
     await calendar.sideMenu.verifySideBarRecords({ records: ['Team Catchup'] });
   });

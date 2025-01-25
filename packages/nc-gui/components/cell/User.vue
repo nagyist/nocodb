@@ -1,5 +1,4 @@
 <script lang="ts" setup>
-import { onUnmounted } from '@vue/runtime-core'
 import tinycolor from 'tinycolor2'
 import { Checkbox, CheckboxGroup, Radio, RadioGroup } from 'ant-design-vue'
 import type { Select as AntSelect } from 'ant-design-vue'
@@ -32,7 +31,11 @@ const activeCell = inject(ActiveCellInj, ref(false))
 
 const basesStore = useBases()
 
+const baseStore = useBase()
+
 const { basesUser } = storeToRefs(basesStore)
+
+const { idUserMap } = storeToRefs(baseStore)
 
 const baseUsers = computed(() => (meta.value.base_id ? basesUser.value.get(meta.value.base_id) || [] : []))
 
@@ -48,9 +51,13 @@ const isMultiple = computed(() => forceMulti || (column.value.meta as { is_multi
 
 const rowHeight = inject(RowHeightInj, ref(undefined))
 
+const isSurveyForm = inject(IsSurveyFormInj, ref(false))
+
 const aselect = ref<typeof AntSelect>()
 
 const isOpen = ref(false)
+
+const isFocusing = ref(false)
 
 const isKanban = inject(IsKanbanInj, ref(false))
 
@@ -96,6 +103,7 @@ const options = computed<UserFieldRecordType[]>(() => {
           display_name: user.display_name,
           deleted: user.deleted,
           order: user.id && limitOptionsById[user.id] ? limitOptionsById[user.id]?.order ?? user.order : order++,
+          meta: user.meta,
         }))
         .sort((a, b) => a.order - b.order),
     )
@@ -108,6 +116,7 @@ const options = computed<UserFieldRecordType[]>(() => {
           display_name: user.display_name,
           deleted: user.deleted,
           order: order++,
+          meta: user.meta,
         }))
         .sort((a, b) => a.order - b.order),
     )
@@ -121,31 +130,45 @@ const editAllowed = computed(() => (hasEditRoles.value || isForm.value) && activ
 
 const vModel = computed({
   get: () => {
-    let selected: { label: string; value: string }[] = []
-    if (typeof modelValue === 'string') {
-      const idsOrMails = modelValue.split(',').map((idOrMail) => idOrMail.trim())
+    let selected: { label: string; value: string; meta: any }[] = []
+
+    let localModelValue = modelValue
+
+    // if stringified json
+    if (typeof localModelValue === 'string' && /^\s*[{[]/.test(localModelValue)) {
+      try {
+        localModelValue = JSON.parse(localModelValue)
+      } catch (e) {
+        // do nothing
+      }
+    }
+
+    if (typeof localModelValue === 'string') {
+      const idsOrMails = localModelValue.split(',').map((idOrMail) => idOrMail.trim())
       selected = idsOrMails.reduce((acc, idOrMail) => {
         const user = options.value.find((u) => u.id === idOrMail || u.email === idOrMail)
         if (user) {
           acc.push({
             label: user?.display_name || user?.email,
             value: user.id,
+            meta: user.meta,
           })
         }
         return acc
-      }, [] as { label: string; value: string }[])
+      }, [] as { label: string; value: string; meta: any }[])
     } else {
-      selected = modelValue
-        ? (Array.isArray(modelValue) ? modelValue : [modelValue]).reduce((acc, item) => {
+      selected = localModelValue
+        ? (Array.isArray(localModelValue) ? localModelValue : [localModelValue]).reduce((acc, item) => {
             const label = item?.display_name || item?.email
             if (label) {
               acc.push({
                 label,
                 value: item.id,
+                meta: item?.meta,
               })
             }
             return acc
-          }, [] as { label: string; value: string }[])
+          }, [] as { label: string; value: string; meta: any }[])
         : []
     }
 
@@ -222,7 +245,7 @@ useSelectedCellKeyupListener(activeCell, (e) => {
         break
       }
       // toggle only if char key pressed
-      if (!(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) && e.key?.length === 1 && !isDrawerOrModalExist()) {
+      if (!(e.metaKey || e.ctrlKey || e.altKey) && e.key?.length === 1 && !isDrawerOrModalExist()) {
         e.stopPropagation()
         isOpen.value = true
       }
@@ -231,9 +254,15 @@ useSelectedCellKeyupListener(activeCell, (e) => {
 })
 
 // close dropdown list on escape
-useSelectedCellKeyupListener(isOpen, (e) => {
-  if (e.key === 'Escape') isOpen.value = false
-})
+useSelectedCellKeyupListener(
+  isOpen,
+  (e) => {
+    if (e.key === 'Escape') isOpen.value = false
+  },
+  {
+    isGridCell: false,
+  },
+)
 
 const search = () => {
   searchVal.value = aselect.value?.$el?.querySelector('.ant-select-selection-search-input')?.value
@@ -250,22 +279,11 @@ const onTagClick = (e: Event, onClose: Function) => {
   }
 }
 
-const cellClickHook = inject(CellClickHookInj, null)
-
 const toggleMenu = () => {
-  if (cellClickHook) return
-  isOpen.value = editAllowed.value && !isOpen.value
-}
+  if (isFocusing.value) return
 
-const cellClickHookHandler = () => {
   isOpen.value = editAllowed.value && !isOpen.value
 }
-onMounted(() => {
-  cellClickHook?.on(cellClickHookHandler)
-})
-onUnmounted(() => {
-  cellClickHook?.on(cellClickHookHandler)
-})
 
 const handleClose = (e: MouseEvent) => {
   // close dropdown if clicked outside of dropdown
@@ -290,6 +308,36 @@ const filterOption = (input: string, option: any) => {
   if (searchVal) {
     return searchVal.toLowerCase().includes(input.toLowerCase())
   }
+}
+
+// check if user is part of the base
+const isCollaborator = (userIdOrEmail) => {
+  return !idUserMap.value?.[userIdOrEmail]?.deleted
+}
+
+const onKeyDown = (e: KeyboardEvent) => {
+  // Tab
+  if (e.key === 'Tab') {
+    isOpen.value = false
+    return
+  } else if (e.key === 'Escape' && isForm.value) {
+    isOpen.value = false
+    return
+  }
+
+  e.stopPropagation()
+}
+
+const onFocus = () => {
+  isFocusing.value = true
+
+  setTimeout(() => {
+    isFocusing.value = false
+  }, 250)
+
+  if (isSurveyForm.value && vModel.value) return
+
+  isOpen.value = true
 }
 </script>
 
@@ -332,9 +380,9 @@ const filterOption = (input: string, option: any) => {
                 <div>
                   <GeneralUserIcon
                     size="auto"
-                    :name="op.display_name?.trim() ? op.display_name?.trim() : ''"
-                    :email="op.email"
-                    class="!text-[0.65rem]"
+                    :user="op"
+                    class="!text-[0.65rem] !h-[16.8px]"
+                    :disabled="!isCollaborator(op.id)"
                   />
                 </div>
                 <NcTooltip class="truncate max-w-full" show-on-truncate-only>
@@ -347,6 +395,9 @@ const filterOption = (input: string, option: any) => {
                       wordBreak: 'keep-all',
                       whiteSpace: 'nowrap',
                       display: 'inline',
+                    }"
+                    :class="{
+                      'text-gray-600': !isCollaborator(op.id || op.email),
                     }"
                   >
                     {{ op.display_name?.trim() || op.email }}
@@ -372,7 +423,7 @@ const filterOption = (input: string, option: any) => {
         :style="{
           'display': '-webkit-box',
           'max-width': '100%',
-          '-webkit-line-clamp': rowHeightTruncateLines(rowHeight),
+          '-webkit-line-clamp': rowHeightTruncateLines(rowHeight, true),
           '-webkit-box-orient': 'vertical',
           'overflow': 'hidden',
         }"
@@ -396,10 +447,14 @@ const filterOption = (input: string, option: any) => {
             >
               <div class="flex-none">
                 <GeneralUserIcon
+                  :disabled="!isCollaborator(selectedOpt.value)"
                   size="auto"
-                  :name="!selectedOpt.label?.includes('@') ? selectedOpt.label.trim() : ''"
-                  :email="selectedOpt.label"
-                  class="!text-[0.65rem]"
+                  :user="{
+                    display_name: !selectedOpt.label?.includes('@') ? selectedOpt.label.trim() : '',
+                    email: selectedOpt.label,
+                    meta: selectedOpt.meta,
+                  }"
+                  class="!text-[0.65rem] !h-[16.8px]"
                 />
               </div>
               <NcTooltip class="truncate max-w-full" show-on-truncate-only>
@@ -412,6 +467,9 @@ const filterOption = (input: string, option: any) => {
                     wordBreak: 'keep-all',
                     whiteSpace: 'nowrap',
                     display: 'inline',
+                  }"
+                  :class="{
+                    'text-gray-600': !isCollaborator(selectedOpt.value),
                   }"
                 >
                   {{ selectedOpt.label }}
@@ -439,7 +497,9 @@ const filterOption = (input: string, option: any) => {
         :dropdown-class-name="`nc-dropdown-user-select-cell !min-w-156px ${isOpen ? 'active' : ''}`"
         :filter-option="filterOption"
         @search="search"
-        @keydown.stop
+        @focus="onFocus"
+        @blur="isOpen = false"
+        @keydown="onKeyDown"
       >
         <template #suffixIcon>
           <GeneralIcon icon="arrowDown" class="text-gray-700 nc-select-expand-btn" />
@@ -469,14 +529,9 @@ const filterOption = (input: string, option: any) => {
                 :class="{ 'text-sm': isKanban, 'text-small': !isKanban }"
               >
                 <div>
-                  <GeneralUserIcon
-                    size="auto"
-                    :name="op.display_name?.trim() ? op.display_name?.trim() : ''"
-                    :email="op.email"
-                    class="!text-[0.65rem]"
-                  />
+                  <GeneralUserIcon size="auto" :user="op" class="!text-[0.65rem] !h-[16.8px]" />
                 </div>
-                <NcTooltip class="truncate max-w-full" show-on-truncate-only>
+                <NcTooltip class="truncate max-w-full" show-on-truncate-only placement="right">
                   <template #title>
                     {{ op.display_name?.trim() || op.email }}
                   </template>
@@ -525,12 +580,22 @@ const filterOption = (input: string, option: any) => {
               <div>
                 <GeneralUserIcon
                   size="auto"
-                  :name="!label?.includes('@') ? label.trim() : ''"
-                  :email="label"
-                  class="!text-[0.65rem]"
+                  :user="{
+                    display_name: !label?.includes('@') ? label.trim() : '',
+                    email: label,
+                    meta: options.find((el) => el.id === val)?.meta,
+                  }"
+                  class="!text-[0.65rem] !h-[16.8px]"
+                  :disabled="!isCollaborator(val)"
                 />
               </div>
-              {{ label }}
+              <span
+                :class="{
+                  'text-gray-600': !isCollaborator(val),
+                }"
+              >
+                {{ label }}
+              </span>
             </span>
           </a-tag>
         </template>
@@ -603,8 +668,9 @@ const filterOption = (input: string, option: any) => {
 }
 
 :deep(.ant-select-selection-search-input) {
-  @apply !text-xs;
+  @apply !text-small;
 }
+
 :deep(.nc-user-avatar) {
   @apply min-h-4.2;
 }

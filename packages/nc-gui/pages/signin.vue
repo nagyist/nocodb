@@ -31,7 +31,7 @@ const formRules: Record<string, RuleObject[]> = {
     {
       validator: (_: unknown, v: string) => {
         return new Promise((resolve, reject) => {
-          if (!v?.length || validateEmail(v)) return resolve()
+          if (!v?.length || validateEmail(v.trim())) return resolve()
 
           reject(new Error(t('msg.error.signUpRules.emailInvalid')))
         })
@@ -107,6 +107,8 @@ function navigateForgotPassword() {
               <a-form-item :label="$t('labels.email')" name="email" :rules="formRules.email">
                 <a-input
                   v-model:value="form.email"
+                  type="email"
+                  autocomplete="email"
                   data-testid="nc-form-signin__email"
                   size="large"
                   :placeholder="$t('msg.info.signUp.workEmail')"
@@ -117,6 +119,7 @@ function navigateForgotPassword() {
               <a-form-item :label="$t('labels.password')" name="password" :rules="formRules.password">
                 <a-input-password
                   v-model:value="form.password"
+                  autocomplete="current-password"
                   data-testid="nc-form-signin__password"
                   size="large"
                   class="password"

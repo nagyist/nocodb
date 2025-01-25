@@ -62,7 +62,7 @@ export class ToolbarGroupByPage extends BasePage {
       .nth(ascending ? 0 : 1)
       .click();
 
-    await this.toolbar.parent.dashboard.waitForLoaderToDisappear();
+    // await this.toolbar.parent.dashboard.waitForLoaderToDisappear();
     // close group-by menu
     await this.toolbar.clickGroupBy();
     await this.toolbar.parent.waitLoading();
@@ -91,7 +91,7 @@ export class ToolbarGroupByPage extends BasePage {
     }
 
     if (isGroupByListOpen) {
-      await this.get().locator('button:has-text("Add subgroup")').click();
+      await this.get().locator('button:has-text("New Subgroup")').click();
     }
 
     const regexTitle = new RegExp(`^${title}`);
@@ -133,7 +133,7 @@ export class ToolbarGroupByPage extends BasePage {
       });
     }
 
-    await this.toolbar.parent.dashboard.waitForLoaderToDisappear();
+    // await this.toolbar.parent.dashboard.waitForLoaderToDisappear();
 
     // close group-by menu
     await this.toolbar.clickGroupBy();

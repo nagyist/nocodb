@@ -1,4 +1,4 @@
-import { OrgUserRoles, ProjectRoles } from 'nocodb-sdk'
+import { OrgUserRoles, ProjectRoles, SourceRestriction } from 'nocodb-sdk'
 
 const roleScopes = {
   org: [OrgUserRoles.VIEWER, OrgUserRoles.CREATOR],
@@ -34,9 +34,13 @@ const rolePermissions = {
       baseDelete: true,
       baseDuplicate: true,
       newUser: true,
+      tableRename: true,
+      tableDelete: true,
       viewCreateOrEdit: true,
       baseReorder: true,
       orgAdminPanel: true,
+      workspaceAuditList: true,
+      workspaceIntegrations: true,
     },
   },
   [OrgUserRoles.VIEWER]: {
@@ -49,6 +53,7 @@ const rolePermissions = {
   [ProjectRoles.OWNER]: {
     include: {
       baseDelete: true,
+      manageSnapshot: true,
     },
   },
   [ProjectRoles.CREATOR]: {
@@ -56,9 +61,11 @@ const rolePermissions = {
       baseCreate: true,
       fieldUpdate: true,
       hookList: true,
+      hookCreate: true,
       tableCreate: true,
       tableRename: true,
       tableDelete: true,
+      tableDescriptionEdit: true,
       tableDuplicate: true,
       tableSort: true,
       layoutRename: true,
@@ -67,9 +74,10 @@ const rolePermissions = {
       jsonImport: true,
       excelImport: true,
       settingsPage: true,
-      newUser: true,
       webhook: true,
       fieldEdit: true,
+      fieldAlter: true,
+      fieldDelete: true,
       fieldAdd: true,
       tableIconEdit: true,
       viewCreateOrEdit: true,
@@ -80,6 +88,9 @@ const rolePermissions = {
       baseRename: true,
       baseDuplicate: true,
       sourceCreate: true,
+      baseAuditList: true,
+
+      extensionList: true,
     },
   },
   [ProjectRoles.EDITOR]: {
@@ -92,13 +103,14 @@ const rolePermissions = {
       viewFieldEdit: true,
       csvTableImport: true,
       excelTableImport: true,
+      hookTrigger: true,
     },
   },
   [ProjectRoles.COMMENTER]: {
     include: {
+      commentDelete: true,
+      commentResolve: true,
       commentEdit: true,
-      commentList: true,
-      commentCount: true,
     },
   },
   [ProjectRoles.VIEWER]: {
@@ -106,12 +118,46 @@ const rolePermissions = {
       baseSettings: true,
       expandedForm: true,
       apiDocs: true,
+
+      commentList: true,
+      commentCount: true,
+      auditListRow: true,
+      newUser: true,
     },
   },
   [ProjectRoles.NO_ACCESS]: {
     include: {},
   },
 } as Record<OrgUserRoles | ProjectRoles, Perm | '*'>
+
+// excluded/restricted permissions at source level based on source restriction
+// `true` means permission is restricted and `false`/missing means permission is allowed
+export const sourceRestrictions = {
+  [SourceRestriction.DATA_READONLY]: {
+    dataInsert: true,
+    dataEdit: true,
+    dataDelete: true,
+    airtableImport: true,
+    csvImport: true,
+    jsonImport: true,
+    excelImport: true,
+    duplicateColumn: true,
+    duplicateModel: true,
+    tableDuplicate: true,
+  },
+  [SourceRestriction.SCHEMA_READONLY]: {
+    tableCreate: true,
+    tableRename: true,
+    tableDelete: true,
+    tableDuplicate: true,
+    airtableImport: true,
+    csvImport: true,
+    jsonImport: true,
+    excelImport: true,
+    duplicateColumn: true,
+    duplicateModel: true,
+  },
+}
 
 /*
   We inherit include permissions from previous roles in the same scope (role order)

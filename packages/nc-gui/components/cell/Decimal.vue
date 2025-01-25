@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 import type { VNodeRef } from '@vue/runtime-core'
+import { roundUpToPrecision } from 'nocodb-sdk'
 
 interface Props {
   // when we set a number, then it is number type
@@ -40,7 +41,14 @@ const displayValue = computed(() => {
 
   if (isNaN(Number(_vModel.value))) return null
 
-  return Number(_vModel.value).toFixed(meta.value.precision ?? 1)
+  if (meta.value.isLocaleString) {
+    return Number(roundUpToPrecision(Number(_vModel.value), meta.value.precision ?? 1)).toLocaleString(undefined, {
+      minimumFractionDigits: meta.value.precision ?? 1,
+      maximumFractionDigits: meta.value.precision ?? 1,
+    })
+  }
+
+  return roundUpToPrecision(Number(_vModel.value), meta.value.precision ?? 1)
 })
 
 const vModel = computed({
@@ -95,6 +103,7 @@ watch(isExpandedFormOpen, () => {
 </script>
 
 <template>
+  <!-- eslint-disable vue/use-v-on-exact -->
   <input
     v-if="!readOnly && editEnabled"
     :ref="focus"
@@ -102,7 +111,7 @@ watch(isExpandedFormOpen, () => {
     class="nc-cell-field outline-none py-1 border-none rounded-md w-full h-full"
     type="number"
     :step="precision"
-    :placeholder="placeholder !== undefined ? placeholder : isEditColumn ? $t('labels.optional') : ''"
+    :placeholder="placeholder"
     style="letter-spacing: 0.06rem"
     @blur="editEnabled = false"
     @keydown.down.stop="onKeyDown"
@@ -110,6 +119,7 @@ watch(isExpandedFormOpen, () => {
     @keydown.right.stop
     @keydown.up.stop="onKeyDown"
     @keydown.delete.stop
+    @keydown.alt.stop
     @selectstart.capture.stop
     @mousedown.stop
   />

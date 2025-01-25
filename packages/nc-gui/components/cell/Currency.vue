@@ -94,21 +94,22 @@ onMounted(() => {
 
 <template>
   <div
-    v-if="isForm && !isEditColumn && !hidePrefix"
+    v-if="isForm && !isEditColumn && editEnabled && !hidePrefix"
     class="nc-currency-code h-full !bg-gray-100 border-r border-gray-200 px-3 mr-1 flex items-center"
   >
     <span>
       {{ currencyMeta.currency_code }}
     </span>
   </div>
+  <!-- eslint-disable vue/use-v-on-exact -->
   <input
-    v-if="(!readOnly && editEnabled) || (isForm && !isEditColumn)"
+    v-if="(!readOnly && editEnabled) || (isForm && !isEditColumn && editEnabled)"
     :ref="focus"
     v-model="vModel"
     type="number"
     class="nc-cell-field h-full border-none rounded-md py-1 outline-none focus:outline-none focus:ring-0"
-    :class="isForm && !isEditColumn ? 'flex flex-1' : 'w-full'"
-    :placeholder="placeholder !== undefined ? placeholder : isEditColumn ? $t('labels.optional') : ''"
+    :class="isForm && !isEditColumn && !hidePrefix ? 'flex flex-1' : 'w-full'"
+    :placeholder="placeholder"
     :disabled="readOnly"
     @blur="onBlur"
     @keydown.enter="onKeydownEnter"
@@ -117,6 +118,7 @@ onMounted(() => {
     @keydown.right.stop
     @keydown.up.stop
     @keydown.delete.stop
+    @keydown.alt.stop
     @selectstart.capture.stop
     @mousedown.stop
     @contextmenu.stop

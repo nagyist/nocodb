@@ -2,7 +2,6 @@ import { expect, Locator } from '@playwright/test';
 import BasePage from '../../Base';
 import { DashboardPage } from '..';
 import { DateTimeCellPageObject } from '../common/Cell/DateTimeCell';
-import { getTextExcludeIconText } from '../../../tests/utils/general';
 
 export class ExpandedFormPage extends BasePage {
   readonly dashboard: DashboardPage;
@@ -12,6 +11,19 @@ export class ExpandedFormPage extends BasePage {
 
   readonly btn_save: Locator;
   readonly btn_moreActions: Locator;
+  readonly btn_nextField: Locator;
+  readonly btn_previousField: Locator;
+
+  readonly span_tableName: Locator;
+  readonly span_modeFields: Locator;
+  readonly span_modeFiles: Locator;
+
+  readonly cnt_filesModeContainer: Locator;
+  readonly cnt_filesNoAttachmentField: Locator;
+  readonly cnt_filesAttachmentHeader: Locator;
+  readonly cnt_filesCurrentFieldTitle: Locator;
+  readonly cnt_filesCurrentAttachmentTitle: Locator;
+  readonly cnt_filesNoAttachment: Locator;
 
   constructor(dashboard: DashboardPage) {
     super(dashboard.rootPage);
@@ -22,6 +34,18 @@ export class ExpandedFormPage extends BasePage {
 
     this.btn_save = this.dashboard.get().locator('button.nc-expand-form-save-btn');
     this.btn_moreActions = this.get().locator('.nc-expand-form-more-actions');
+    this.btn_nextField = this.get().locator('.nc-expanded-form-header button.nc-button.nc-next-arrow');
+    this.btn_previousField = this.get().locator('.nc-expanded-form-header button.nc-button.nc-prev-arrow');
+    this.span_tableName = this.get().locator('.nc-expanded-form-header').last().locator('.nc-expanded-form-table-name');
+    this.span_modeFields = this.get().locator('.nc-expanded-form-mode-switch').last().locator('.tab').nth(0);
+    this.span_modeFiles = this.get().locator('.nc-expanded-form-mode-switch').last().locator('.tab').nth(1);
+
+    this.cnt_filesModeContainer = this.get().locator('.nc-files-mode-container');
+    this.cnt_filesNoAttachmentField = this.get().locator('.nc-files-no-attachment-field');
+    this.cnt_filesAttachmentHeader = this.get().locator('.nc-files-attachment-header');
+    this.cnt_filesCurrentFieldTitle = this.get().locator('.nc-files-current-field-title');
+    this.cnt_filesCurrentAttachmentTitle = this.get().locator('.nc-files-current-attachment-title');
+    this.cnt_filesNoAttachment = this.get().locator('.nc-files-no-attachment');
   }
 
   get() {
@@ -46,8 +70,8 @@ export class ExpandedFormPage extends BasePage {
   }
 
   async clickDeleteRow() {
-    await this.click3DotsMenu('Delete Record');
-    await this.rootPage.locator('.ant-btn-danger:has-text("Delete Record")').click();
+    await this.click3DotsMenu('Delete record');
+    await this.rootPage.locator('.ant-btn-danger:has-text("Delete record")').click();
   }
 
   async isDisabledDuplicateRow() {
@@ -67,11 +91,21 @@ export class ExpandedFormPage extends BasePage {
     await this.dashboard.waitForLoaderToDisappear();
   }
 
-  async fillField({ columnTitle, value, type = 'text' }: { columnTitle: string; value: string; type?: string }) {
+  async fillField({
+    columnTitle,
+    value,
+    type = 'text',
+    ltarCount,
+  }: {
+    columnTitle: string;
+    value: string;
+    type?: string;
+    ltarCount?: number | string;
+  }) {
     const field = this.get().getByTestId(`nc-expand-col-${columnTitle}`);
     switch (type) {
       case 'text':
-        await field.locator('input').fill(value);
+        await field.locator('input, textarea').fill(value);
         break;
       case 'geodata': {
         const [lat, long] = value.split(',');
@@ -84,12 +118,18 @@ export class ExpandedFormPage extends BasePage {
       case 'belongsTo':
         await field.locator('.nc-virtual-cell').hover();
         await field.locator('.nc-action-icon').click();
+        if (ltarCount !== undefined && ltarCount !== null) {
+          await this.dashboard.linkRecord.verifyCount(`${ltarCount}`);
+        }
         await this.dashboard.linkRecord.select(value, false);
         break;
       case 'hasMany':
       case 'manyToMany':
         await field.locator('.nc-virtual-cell').hover();
         await field.locator('.nc-action-icon').click();
+        if (ltarCount !== undefined && ltarCount !== null) {
+          await this.dashboard.linkRecord.verifyCount(`${ltarCount}`);
+        }
         await this.dashboard.linkRecord.select(value);
         break;
       case 'dateTime':
@@ -200,12 +240,52 @@ export class ExpandedFormPage extends BasePage {
     }
 
     if (role === 'viewer') {
-      await expect(this.get().locator('.nc-comments-drawer')).toHaveCount(0);
+      await expect(this.get().locator('.nc-comments-drawer .nc-comment-input')).toHaveCount(0);
     } else {
-      await expect(this.get().locator('.nc-comments-drawer')).toHaveCount(1);
+      await expect(this.get().locator('.nc-comments-drawer .nc-comment-input')).toHaveCount(1);
     }
 
     // press escape to close the expanded form
     await this.rootPage.keyboard.press('Escape');
+  }
+
+  async moveToNextField() {
+    await this.btn_nextField.click();
+  }
+
+  async moveToPreviousField() {
+    await this.btn_previousField.click();
+  }
+
+  async verifyTableNameShown({ name }: { name: string }) {
+    return await expect(this.span_tableName).toContainText(name);
+  }
+
+  async verifyIsInFieldsMode() {
+    return await expect(this.span_modeFields).toHaveClass(/active/);
+  }
+
+  async verifyIsInFilesMode() {
+    return await expect(this.span_modeFiles).toHaveClass(/active/);
+  }
+
+  async switchToFieldsMode() {
+    await this.span_modeFields.click();
+  }
+
+  async switchToFilesMode() {
+    await this.span_modeFiles.click();
+  }
+
+  async verifyFilesViewerMode({ mode }: { mode: 'image' | 'video' | 'audio' | 'pdf' | 'unsupported' }) {
+    await expect(this.get().locator(`.nc-files-mode-container .nc-files-viewer-${mode}`)).toBeVisible();
+  }
+
+  async verifyPreviewCellsCount({ count }: { count: number }) {
+    await expect(this.get().locator(`.nc-files-mode-container .nc-files-preview-cell`)).toHaveCount(count);
+  }
+
+  async selectNthFilePreviewCell({ index }: { index: number }) {
+    await this.get().locator(`.nc-files-mode-container .nc-files-preview-cell`).nth(index).click();
   }
 }

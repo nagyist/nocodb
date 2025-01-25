@@ -46,6 +46,7 @@ const focus: VNodeRef = (el) =>
 </script>
 
 <template>
+  <!-- eslint-disable vue/use-v-on-exact -->
   <input
     v-if="editEnabled"
     :ref="focus"
@@ -53,13 +54,13 @@ const focus: VNodeRef = (el) =>
     class="nc-cell-field outline-none px-1 border-none w-full h-full"
     type="number"
     step="0.1"
-    :placeholder="isEditColumn ? $t('labels.optional') : ''"
     @blur="editEnabled = false"
     @keydown.down.stop
     @keydown.left.stop
     @keydown.right.stop
     @keydown.up.stop
     @keydown.delete.stop
+    @keydown.alt.stop
     @selectstart.capture.stop
     @mousedown.stop
   />

@@ -1,4 +1,6 @@
-import { Locator } from '@playwright/test';
+import { expect, Locator } from '@playwright/test';
+import * as fs from 'fs';
+
 import BasePage from '../../../Base';
 import { GridPage } from '../../Grid';
 import { GalleryPage } from '../../Gallery';
@@ -15,6 +17,8 @@ export class TopbarPage extends BasePage {
   readonly btn_share: Locator;
   readonly btn_data: Locator;
   readonly btn_details: Locator;
+  readonly btn_cmdK: Locator;
+  readonly btn_extension: Locator;
 
   constructor(parent: GridPage | GalleryPage | FormPage | KanbanPage | MapPage | CalendarPage) {
     super(parent.rootPage);
@@ -24,6 +28,8 @@ export class TopbarPage extends BasePage {
     this.btn_share = this.get().locator(`[data-testid="share-base-button"]`);
     this.btn_data = this.get().locator(`.nc-tab:has-text("Data")`);
     this.btn_details = this.get().locator(`.nc-tab:has-text("Details")`);
+    this.btn_cmdK = this.rootPage.locator('[data-testid="nc-topbar-cmd-k-btn"]');
+    this.btn_extension = this.get().locator('[data-testid="nc-topbar-extension-btn"]');
   }
 
   get() {
@@ -97,5 +103,32 @@ export class TopbarPage extends BasePage {
     await this.get().locator(`.nc-icon-reload`).waitFor({ state: 'visible' });
     await this.get().locator(`.nc-icon-reload`).click();
     await this.rootPage.waitForLoadState('networkidle');
+  }
+
+  async clickDownload(type: string, verificationFile = 'expectedData.txt') {
+    await this.get().locator(`.nc-toolbar-btn.nc-actions-menu-btn`).click();
+
+    const [download] = await Promise.all([
+      // Start waiting for the download
+      this.rootPage.waitForEvent('download'),
+      // Perform the action that initiates download
+      this.rootPage
+        .locator(`.nc-dropdown-actions-menu`)
+        .locator(`li.ant-dropdown-menu-item:has-text("${type}")`)
+        .click(),
+    ]);
+
+    // Save downloaded file somewhere
+    await download.saveAs('./output/at.txt');
+
+    // verify downloaded content against expected content
+    const expectedData = fs.readFileSync(`./fixtures/${verificationFile}`, 'utf8').replace(/\r/g, '').split('\n');
+    const file = fs.readFileSync('./output/at.txt', 'utf8').replace(/\r/g, '').split('\n');
+    expect(file).toEqual(expectedData);
+  }
+
+  async verifyQuickActions({ isVisible }: { isVisible: boolean }) {
+    if (isVisible) await expect(this.btn_cmdK).toBeVisible();
+    else await expect(this.btn_cmdK).toHaveCount(0);
   }
 }

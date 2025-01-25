@@ -47,9 +47,7 @@ const { $api } = useNuxtApp()
 
 const searchVal = ref()
 
-const { getMeta } = useMetas()
-
-const { isUIAllowed } = useRoles()
+const { isUIAllowed, isMetaReadOnly } = useRoles()
 
 const { isPg, isMysql } = useBase()
 
@@ -59,7 +57,9 @@ const tempSelectedOptState = ref<string>()
 
 const isFocusing = ref(false)
 
-const isNewOptionCreateEnabled = computed(() => !isPublic.value && !disableOptionCreation && isUIAllowed('fieldEdit'))
+const isNewOptionCreateEnabled = computed(
+  () => !isPublic.value && !disableOptionCreation && isUIAllowed('fieldEdit') && !isMetaReadOnly.value && !isForm.value,
+)
 
 const options = computed<(SelectOptionType & { value: string })[]>(() => {
   if (column?.value.colOptions) {
@@ -160,7 +160,7 @@ useSelectedCellKeyupListener(activeCell, (e) => {
         break
       }
       // toggle only if char key pressed
-      if (!(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) && e.key?.length === 1 && !isDrawerOrModalExist()) {
+      if (!(e.metaKey || e.ctrlKey || e.altKey) && e.key?.length === 1 && !isDrawerOrModalExist()) {
         e.stopPropagation()
         isOpen.value = true
       }
@@ -202,12 +202,14 @@ async function addIfMissingAndSave() {
         }
       }
 
-      await $api.dbTableColumn.update(
+      const data = await $api.dbTableColumn.update(
         (column.value as { fk_column_id?: string })?.fk_column_id || (column.value?.id as string),
         updatedColMeta,
       )
+
+      column.value.colOptions = data.columns.find((c) => c.id === column.value.id).colOptions
+
       vModel.value = newOptValue
-      await getMeta(column.value.fk_model_id!, true)
     } catch (e: any) {
       console.log(e)
       message.error(await extractSdkResponseErrorMsg(e))
@@ -291,6 +293,16 @@ const onFocus = () => {
 
   isOpen.value = true
 }
+
+watch(
+  () => active.value,
+  (newValue) => {
+    if (newValue) return
+
+    searchVal.value = ''
+    isOpen.value = false
+  },
+)
 </script>
 
 <template>
@@ -385,15 +397,14 @@ const onFocus = () => {
         v-else
         ref="aselect"
         v-model:value="vModel"
-        class="w-full overflow-hidden xs:min-h-12"
+        class="w-full overflow-hidden"
         :class="{ 'caret-transparent': !hasEditRoles }"
-        :placeholder="isEditColumn ? $t('labels.optional') : ''"
         :allow-clear="!column.rqd && editAllowed"
         :bordered="false"
         :open="isOpen && editAllowed"
         :disabled="readOnly || !editAllowed"
         :show-search="!isMobileMode && isOpen && active"
-        :show-arrow="hasEditRoles && !readOnly && active && (vModel === null || vModel === undefined)"
+        :show-arrow="hasEditRoles && !readOnly && active && (vModel === null || vModel === undefined) && !searchVal"
         :dropdown-class-name="`nc-dropdown-single-select-cell !min-w-156px ${isOpen && active ? 'active' : ''}`"
         :dropdown-match-select-width="true"
         @select="onSelect"
@@ -406,6 +417,7 @@ const onFocus = () => {
           v-for="op of options"
           :key="op.title"
           :value="op.title"
+          class="gap-2"
           :data-testid="`select-option-${column.title}-${rowIndex}`"
           :class="`nc-select-option-${column.title}-${op.title}`"
           @click.stop
@@ -480,8 +492,12 @@ const onFocus = () => {
   text-overflow: clip;
 }
 
-:deep(.ant-select-selection-search-input) {
-  @apply !text-xs;
+:deep(.ant-select-selection-search) {
+  @apply flex items-center;
+
+  .ant-select-selection-search-input {
+    @apply !text-small;
+  }
 }
 
 :deep(.ant-select-clear > span) {

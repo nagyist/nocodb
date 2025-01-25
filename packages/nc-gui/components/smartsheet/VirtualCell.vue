@@ -40,10 +40,13 @@ function onNavigate(dir: NavigateDir, e: KeyboardEvent) {
 <template>
   <div
     class="nc-virtual-cell w-full flex items-center"
-    :class="{
-      'text-right justify-end': isGrid && !isForm && isRollup(column) && !isExpandedForm,
-      'nc-display-value-cell': isPrimary(column) && !isForm,
-    }"
+    :class="[
+      `nc-virtual-cell-${(column.uidt || 'default').toLowerCase()}`,
+      {
+        'text-right justify-end': isGrid && !isForm && isRollup(column) && !isExpandedForm,
+        'nc-display-value-cell': isPrimary(column) && !isForm,
+      },
+    ]"
     @keydown.enter.exact="onNavigate(NavigateDir.NEXT, $event)"
     @keydown.shift.enter.exact="onNavigate(NavigateDir.PREV, $event)"
   >
@@ -58,6 +61,7 @@ function onNavigate(dir: NavigateDir, e: KeyboardEvent) {
     <LazyVirtualCellBarcode v-else-if="isBarcode(column)" />
     <LazyVirtualCellCount v-else-if="isCount(column)" />
     <LazyVirtualCellLookup v-else-if="isLookup(column)" />
+    <LazyVirtualCellButton v-else-if="isButton(column)" />
     <LazyCellReadOnlyDateTimePicker v-else-if="isCreatedOrLastModifiedTimeCol(column)" :model-value="modelValue" />
     <LazyCellReadOnlyUser v-else-if="isCreatedOrLastModifiedByCol(column)" :model-value="modelValue" />
   </div>

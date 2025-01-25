@@ -7,6 +7,7 @@ interface Props {
   isMinGranularityPicker?: boolean
   minGranularity?: number
   isOpen?: boolean
+  showCurrentDateOption?: boolean | 'disabled'
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -16,7 +17,7 @@ const props = withDefaults(defineProps<Props>(), {
   minGranularity: 30,
   isOpen: false,
 })
-const emit = defineEmits(['update:selectedDate'])
+const emit = defineEmits(['update:selectedDate', 'currentDate'])
 
 const pageDate = ref<dayjs.Dayjs>(dayjs())
 
@@ -42,7 +43,7 @@ const handleSelectTime = (time: dayjs.Dayjs) => {
 
 // TODO: 12hr time format & regular time picker
 const timeOptions = computed(() => {
-  return Array.from({ length: is12hrFormat.value ? 12 : 24 }).flatMap((_, h) => {
+  return Array.from({ length: 24 }).flatMap((_, h) => {
     return (isMinGranularityPicker.value ? [0, minGranularity.value] : Array.from({ length: 60 })).map((_m, m) => {
       const time = dayjs()
         .set('hour', h)
@@ -89,14 +90,28 @@ onMounted(() => {
         :data-testid="`time-option-${time.format('HH:mm')}`"
         @click="handleSelectTime(time)"
       >
-        {{ time.format('HH:mm') }}
+        {{ time.format(is12hrFormat ? 'hh:mm A' : 'HH:mm') }}
       </div>
     </div>
     <div v-else></div>
-    <div class="px-2 py-1 box-border flex items-center justify-center">
+    <div class="px-2 py-1 box-border flex items-center justify-center gap-2">
       <NcButton :tabindex="-1" class="!h-7" size="small" type="secondary" @click="handleSelectTime(dayjs())">
         <span class="text-small"> {{ $t('general.now') }} </span>
       </NcButton>
+      <NcTooltip v-if="showCurrentDateOption" :disabled="showCurrentDateOption !== 'disabled'">
+        <template #title>
+          {{ $t('tooltip.currentDateNotAvail') }}
+        </template>
+        <NcButton
+          class="nc-date-picker-now-btn !h-7"
+          size="small"
+          type="secondary"
+          :disabled="showCurrentDateOption === 'disabled'"
+          @click="emit('currentDate')"
+        >
+          <span class="text-small"> {{ $t('labels.currentDate') }} </span>
+        </NcButton>
+      </NcTooltip>
     </div>
   </div>
 </template>

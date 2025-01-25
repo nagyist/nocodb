@@ -81,11 +81,11 @@ watch(
 
 <template>
   <div class="flex flex-row items-center justify-between w-full h-full">
+    <!-- eslint-disable vue/use-v-on-exact -->
     <input
       v-if="!readOnly && editEnabled"
       :ref="focus"
       v-model="vModel"
-      :placeholder="isEditColumn ? $t('labels.enterDefaultUrlOptional') : ''"
       class="nc-cell-field outline-none w-full py-1 bg-transparent h-full"
       @blur="editEnabled = false"
       @keydown.down.stop
@@ -93,6 +93,7 @@ watch(
       @keydown.right.stop
       @keydown.up.stop
       @keydown.delete.stop
+      @keydown.alt.stop
       @selectstart.capture.stop
       @mousedown.stop
     />
@@ -103,7 +104,7 @@ watch(
       v-else-if="isValid && !cellUrlOptions?.overlay"
       no-prefetch
       no-rel
-      class="py-1 z-3 underline hover:opacity-75 nc-cell-field-link max-w-full"
+      class="py-1 z-3 underline nc-cell-field-link max-w-full"
       :to="url"
       :target="cellUrlOptions?.behavior === 'replace' ? undefined : '_blank'"
       :tabindex="readOnly ? -1 : 0"
@@ -115,7 +116,7 @@ watch(
       v-else-if="isValid && !disableOverlay && cellUrlOptions?.overlay"
       no-prefetch
       no-rel
-      class="py-1 z-3 w-full h-full text-center !no-underline hover:opacity-75 nc-cell-field-link max-w-full"
+      class="py-1 z-3 w-full h-full text-center !no-underline nc-cell-field-link max-w-full"
       :to="url"
       :target="cellUrlOptions?.behavior === 'replace' ? undefined : '_blank'"
       :tabindex="readOnly ? -1 : 0"

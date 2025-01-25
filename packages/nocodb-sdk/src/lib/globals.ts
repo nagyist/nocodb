@@ -9,6 +9,27 @@ export enum ViewTypes {
   CALENDAR = 6,
 }
 
+export const viewTypeAlias: Record<ViewTypes, string> = {
+  [ViewTypes.FORM]: 'form',
+  [ViewTypes.GALLERY]: 'gallery',
+  [ViewTypes.GRID]: 'grid',
+  [ViewTypes.KANBAN]: 'kanban',
+  [ViewTypes.MAP]: 'map',
+  [ViewTypes.CALENDAR]: 'calendar',
+};
+
+export const viewTypeToStringMap: Record<ViewTypes, string> = {
+  ...viewTypeAlias,
+};
+
+// Generate reverse mapping from the original viewTypeAlias
+export const stringToViewTypeMap: Record<string, ViewTypes> = Object.entries(
+  viewTypeAlias
+).reduce((acc, [key, value]) => {
+  acc[value] = Number(key);
+  return acc;
+}, {});
+
 export enum ProjectTypes {
   DATABASE = 'database',
   DOCUMENTATION = 'documentation',
@@ -23,50 +44,17 @@ export enum RelationTypes {
   ONE_TO_ONE = 'oo',
 }
 
+export const ExpandedFormMode = {
+  FIELD: 'field',
+  ATTACHMENT: 'attachment',
+} as const;
+
+export type ExpandedFormModeType =
+  (typeof ExpandedFormMode)[keyof typeof ExpandedFormMode];
+
 export enum ExportTypes {
   EXCEL = 'excel',
   CSV = 'csv',
-}
-
-export enum AuditOperationTypes {
-  COMMENT = 'COMMENT',
-  DATA = 'DATA',
-  PROJECT = 'PROJECT',
-  VIRTUAL_RELATION = 'VIRTUAL_RELATION',
-  RELATION = 'RELATION',
-  TABLE_VIEW = 'TABLE_VIEW',
-  TABLE = 'TABLE',
-  VIEW = 'VIEW',
-  META = 'META',
-  WEBHOOKS = 'WEBHOOKS',
-  AUTHENTICATION = 'AUTHENTICATION',
-  TABLE_COLUMN = 'TABLE_COLUMN',
-  ORG_USER = 'ORG_USER',
-}
-
-export enum AuditOperationSubTypes {
-  UPDATE = 'UPDATE',
-  INSERT = 'INSERT',
-  BULK_INSERT = 'BULK_INSERT',
-  BULK_UPDATE = 'BULK_UPDATE',
-  BULK_DELETE = 'BULK_DELETE',
-  LINK_RECORD = 'LINK_RECORD',
-  UNLINK_RECORD = 'UNLINK_RECORD',
-  DELETE = 'DELETE',
-  CREATE = 'CREATE',
-  RENAME = 'RENAME',
-  IMPORT_FROM_ZIP = 'IMPORT_FROM_ZIP',
-  EXPORT_TO_FS = 'EXPORT_TO_FS',
-  EXPORT_TO_ZIP = 'EXPORT_TO_ZIP',
-  SIGNIN = 'SIGNIN',
-  SIGNUP = 'SIGNUP',
-  PASSWORD_RESET = 'PASSWORD_RESET',
-  PASSWORD_FORGOT = 'PASSWORD_FORGOT',
-  PASSWORD_CHANGE = 'PASSWORD_CHANGE',
-  EMAIL_VERIFICATION = 'EMAIL_VERIFICATION',
-  ROLES_MANAGEMENT = 'ROLES_MANAGEMENT',
-  INVITE = 'INVITE',
-  RESEND_INVITE = 'RESEND_INVITE',
 }
 
 export enum PluginCategory {
@@ -134,9 +122,13 @@ export enum NcErrorType {
   VIEW_NOT_FOUND = 'VIEW_NOT_FOUND',
   FIELD_NOT_FOUND = 'FIELD_NOT_FOUND',
   RECORD_NOT_FOUND = 'RECORD_NOT_FOUND',
+  GENERIC_NOT_FOUND = 'GENERIC_NOT_FOUND',
+  HOOK_NOT_FOUND = 'HOOK_NOT_FOUND',
+  REQUIRED_FIELD_MISSING = 'REQUIRED_FIELD_MISSING',
   ERROR_DUPLICATE_RECORD = 'ERROR_DUPLICATE_RECORD',
   USER_NOT_FOUND = 'USER_NOT_FOUND',
   INVALID_OFFSET_VALUE = 'INVALID_OFFSET_VALUE',
+  INVALID_PAGE_VALUE = 'INVALID_PAGE_VALUE',
   INVALID_LIMIT_VALUE = 'INVALID_LIMIT_VALUE',
   INVALID_FILTER = 'INVALID_FILTER',
   INVALID_SHARED_VIEW_PASSWORD = 'INVALID_SHARED_VIEW_PASSWORD',
@@ -146,7 +138,21 @@ export enum NcErrorType {
   DATABASE_ERROR = 'DATABASE_ERROR',
   UNKNOWN_ERROR = 'UNKNOWN_ERROR',
   BAD_JSON = 'BAD_JSON',
+  INVALID_PK_VALUE = 'INVALID_PK_VALUE',
+  COLUMN_ASSOCIATED_WITH_LINK = 'COLUMN_ASSOCIATED_WITH_LINK',
+  TABLE_ASSOCIATED_WITH_LINK = 'TABLE_ASSOCIATED_WITH_LINK',
+  INTEGRATION_NOT_FOUND = 'INTEGRATION_NOT_FOUND',
+  INTEGRATION_LINKED_WITH_BASES = 'INTEGRATION_LINKED_WITH_BASES',
+  FORMULA_ERROR = 'FORMULA_ERROR',
+  PERMISSION_DENIED = 'PERMISSION_DENIED',
+  INVALID_ATTACHMENT_UPLOAD_SCOPE = 'INVALID_ATTACHMENT_UPLOAD_SCOPE',
+  CANNOT_CALCULATE_INTERMEDIATE_ORDER = 'CANNOT_CALCULATE_INTERMEDIATE_ORDER',
+  REORDER_FAILED = 'REORDER_FAILED',
 }
+
+export const LongTextAiMetaProp = 'ai';
+
+export const NO_SCOPE = 'nc';
 
 type Roles = OrgUserRoles | ProjectRoles | WorkspaceUserRoles;
 

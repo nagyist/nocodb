@@ -1,6 +1,7 @@
 import { isString } from '@vue/shared'
-import type { Roles, RolesObj, WorkspaceUserRoles } from 'nocodb-sdk'
+import { type Roles, type RolesObj, SourceRestriction, type SourceType, type WorkspaceUserRoles } from 'nocodb-sdk'
 import { extractRolesObj } from 'nocodb-sdk'
+import type { MaybeRef } from 'vue'
 
 const hasPermission = (role: Exclude<Roles, WorkspaceUserRoles>, hasRole: boolean, permission: Permission | string) => {
   const rolePermission = rolePermissions[role]
@@ -24,7 +25,7 @@ const hasPermission = (role: Exclude<Roles, WorkspaceUserRoles>, hasRole: boolea
  * * `allRoles` - all roles a user has (userRoles + baseRoles)
  * * `loadRoles` - a function to load reload user roles for scope
  */
-export const useRoles = createSharedComposable(() => {
+export const useRolesShared = createSharedComposable(() => {
   const { user } = useGlobal()
 
   const { api } = useApi()
@@ -88,6 +89,7 @@ export const useRoles = createSharedComposable(() => {
         ...user.value,
         roles: res.roles,
         base_roles: res.base_roles,
+        meta: res.meta,
       } as User
     } else if (options?.isSharedErd) {
       const res = await api.auth.me(
@@ -105,6 +107,7 @@ export const useRoles = createSharedComposable(() => {
         ...user.value,
         roles: res.roles,
         base_roles: res.base_roles,
+        meta: res.meta,
       } as User
     } else if (baseId) {
       const res = await api.auth.me({ base_id: baseId })
@@ -114,6 +117,7 @@ export const useRoles = createSharedComposable(() => {
         roles: res.roles,
         base_roles: res.base_roles,
         display_name: res.display_name,
+        meta: res.meta,
       } as User
     } else {
       const res = await api.auth.me({})
@@ -123,13 +127,18 @@ export const useRoles = createSharedComposable(() => {
         roles: res.roles,
         base_roles: res.base_roles,
         display_name: res.display_name,
+        meta: res.meta,
       } as User
     }
   }
 
   const isUIAllowed = (
     permission: Permission | string,
-    args: { roles?: string | Record<string, boolean> | string[] | null } = {},
+    args: {
+      roles?: string | Record<string, boolean> | string[] | null
+      source?: MaybeRef<SourceType & { meta?: Record<string, any> }>
+      skipSourceCheck?: boolean
+    } = {},
   ) => {
     const { roles } = args
 
@@ -141,6 +150,27 @@ export const useRoles = createSharedComposable(() => {
       checkRoles = extractRolesObj(roles)
     }
 
+    // check source level restrictions
+    if (
+      !args.skipSourceCheck &&
+      (sourceRestrictions[SourceRestriction.DATA_READONLY][permission] ||
+        sourceRestrictions[SourceRestriction.SCHEMA_READONLY][permission])
+    ) {
+      const source = unref(args.source || null)
+
+      if (!source) {
+        console.warn('Source reference not found', permission)
+        return false
+      }
+
+      if (source?.is_data_readonly && sourceRestrictions[SourceRestriction.DATA_READONLY][permission]) {
+        return false
+      }
+      if (source?.is_schema_readonly && sourceRestrictions[SourceRestriction.SCHEMA_READONLY][permission]) {
+        return false
+      }
+    }
+
     return Object.entries(checkRoles).some(([role, hasRole]) =>
       hasPermission(role as Exclude<Roles, WorkspaceUserRoles>, hasRole, permission),
     )
@@ -148,3 +178,31 @@ export const useRoles = createSharedComposable(() => {
 
   return { allRoles, orgRoles, workspaceRoles, baseRoles, loadRoles, isUIAllowed }
 })
+
+type IsUIAllowedParams = Parameters<ReturnType<typeof useRolesShared>['isUIAllowed']>
+
+/**
+ * Wrap the default shared composable to inject the current source if available
+ * which will be used to determine if a user has permission to perform an action based on the source's restrictions
+ */
+export const useRoles = () => {
+  const currentSource = inject(ActiveSourceInj, ref())
+  const useRolesRes = useRolesShared()
+
+  const isMetaReadOnly = computed(() => {
+    return currentSource.value?.is_schema_readonly || false
+  })
+
+  const isDataReadOnly = computed(() => {
+    return currentSource.value?.is_data_readonly || false
+  })
+
+  return {
+    ...useRolesRes,
+    isUIAllowed: (...args: IsUIAllowedParams) => {
+      return useRolesRes.isUIAllowed(args[0], { source: currentSource, ...(args[1] || {}) })
+    },
+    isDataReadOnly,
+    isMetaReadOnly,
+  }
+}

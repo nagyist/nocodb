@@ -1,21 +1,31 @@
 <script setup lang="ts">
 import dayjs from 'dayjs'
-import { dateFormats, isSystemColumn, isValidTimeFormat, timeFormats } from 'nocodb-sdk'
+import { dateFormats, isSystemColumn, timeFormats } from 'nocodb-sdk'
 
 interface Props {
   modelValue?: string | null
   isPk?: boolean
+  showCurrentDateOption?: boolean | 'disabled'
   isUpdatedFromCopyNPaste?: Record<string, boolean>
 }
 
 const { modelValue, isPk, isUpdatedFromCopyNPaste } = defineProps<Props>()
-const emit = defineEmits(['update:modelValue'])
+
+const emit = defineEmits(['update:modelValue', 'currentDate'])
+
+const timeFormatsObj = {
+  [timeFormats[0]]: 'hh:mm A',
+  [timeFormats[1]]: 'hh:mm:ss A',
+  [timeFormats[2]]: 'hh:mm:ss.SSS A',
+}
 
 const { isMssql, isXcdbBase } = useBase()
 
-const { showNull, isMobileMode } = useGlobal()
+const { showNull } = useGlobal()
 
 const readOnly = inject(ReadonlyInj, ref(false))
+
+const rawReadOnly = inject(RawReadonlyInj, ref(false))
 
 const active = inject(ActiveCellInj, ref(false))
 
@@ -24,6 +34,8 @@ const editable = inject(EditModeInj, ref(false))
 const isGrid = inject(IsGridInj, ref(false))
 
 const isForm = inject(IsFormInj, ref(false))
+
+const isSurveyForm = inject(IsSurveyFormInj, ref(false))
 
 const { t } = useI18n()
 
@@ -111,20 +123,44 @@ const localState = computed({
   },
   set(val?: dayjs.Dayjs) {
     isClearedInputMode.value = false
-    if (!val) {
-      emit('update:modelValue', null)
 
+    saveChanges(val)
+  },
+})
+
+const savingValue = ref()
+
+function saveChanges(val?: dayjs.Dayjs, saveOnChange = false) {
+  if (!val) {
+    if (savingValue.value === null) {
       return
     }
 
-    if (val.isValid()) {
-      // setting localModelValue to cater NOW function in date picker
-      localModelValue = dayjs(val)
-      // send the payload in UTC format
-      emit('update:modelValue', dayjs(val).utc().format('YYYY-MM-DD HH:mm:ssZ'))
+    savingValue.value = null
+    emit('update:modelValue', null)
+
+    return
+  }
+
+  if (saveOnChange && localState.value?.isSame(val)) {
+    return
+  }
+
+  if (val.isValid()) {
+    // setting localModelValue to cater NOW function in date picker
+    localModelValue = dayjs(val)
+    // send the payload in UTC format
+
+    const formattedValue = dayjs(val).utc().format('YYYY-MM-DD HH:mm:ssZ')
+
+    if (savingValue.value === formattedValue) {
+      return
     }
-  },
-})
+
+    savingValue.value = formattedValue
+    emit('update:modelValue', formattedValue)
+  }
+}
 
 watchEffect(() => {
   if (localState.value) {
@@ -142,6 +178,59 @@ const isOpen = computed(() => {
   return readOnly.value || (localState.value && isPk) ? false : open.value && (active.value || editable.value)
 })
 
+const handleUpdateValue = (e: Event, _isDatePicker: boolean, save = false) => {
+  let targetValue = (e.target as HTMLInputElement).value
+
+  if (_isDatePicker) {
+    if (!targetValue) {
+      tempDate.value = undefined
+      return
+    }
+
+    const date = dayjs(targetValue, dateFormat.value)
+
+    if (date.isValid()) {
+      if (localState.value) {
+        tempDate.value = dayjs(`${date.format('YYYY-MM-DD')} ${localState.value.format(timeFormat.value)}`)
+      } else {
+        tempDate.value = date
+      }
+
+      if (save) {
+        saveChanges(tempDate.value, true)
+      }
+    }
+  }
+
+  if (!_isDatePicker) {
+    if (!targetValue) {
+      tempDate.value = dayjs(dayjs().format('YYYY-MM-DD'))
+      return
+    }
+
+    targetValue = parseProp(column.value.meta).is12hrFormat
+      ? targetValue
+          .trim()
+          .toUpperCase()
+          .replace(/(AM|PM)$/, ' $1')
+          .replace(/\s+/g, ' ')
+      : targetValue.trim()
+
+    const parsedDate = dayjs(
+      targetValue,
+      parseProp(column.value.meta).is12hrFormat ? timeFormatsObj[timeFormat.value] : timeFormat.value,
+    )
+
+    if (parsedDate.isValid()) {
+      tempDate.value = dayjs(`${(tempDate.value ?? dayjs()).format('YYYY-MM-DD')} ${parsedDate.format(timeFormat.value)}`)
+
+      if (save) {
+        saveChanges(tempDate.value, true)
+      }
+    }
+  }
+}
+
 const randomClass = `picker_${Math.floor(Math.random() * 99999)}`
 
 onClickOutside(datePickerRef, (e) => {
@@ -155,6 +244,10 @@ onClickOutside(datePickerRef, (e) => {
 const onFocus = (_isDatePicker: boolean) => {
   isDatePicker.value = _isDatePicker
   open.value = true
+}
+
+const onBlur = (e: Event, _isDatePicker: boolean) => {
+  handleUpdateValue(e, _isDatePicker, true)
 }
 
 watch(
@@ -181,11 +274,14 @@ watch(
 const placeholder = computed(() => {
   if (
     ((isForm.value || isExpandedForm.value) && !isDateInvalid.value) ||
-    (isGrid.value && !showNull.value && !isDateInvalid.value && !isSystemColumn(column.value) && active.value)
+    (isGrid.value && !showNull.value && !isDateInvalid.value && !isSystemColumn(column.value) && active.value) ||
+    isEditColumn.value
   ) {
-    return { dateTime: dateTimeFormat.value, date: dateFormat.value, time: timeFormat.value }
-  } else if (isEditColumn.value && (modelValue === '' || modelValue === null)) {
-    return t('labels.optional')
+    return {
+      dateTime: dateTimeFormat.value,
+      date: dateFormat.value,
+      time: parseProp(column.value.meta).is12hrFormat ? `${timeFormat.value} AM` : timeFormat.value,
+    }
   } else if (modelValue === null && showNull.value) {
     return t('general.null').toUpperCase()
   } else if (isDateInvalid.value) {
@@ -208,7 +304,7 @@ onUnmounted(() => {
   cellClickHook?.on(cellClickHandler)
 })
 
-const clickHandler = (e: MouseEvent, _isDatePicker: boolean = false) => {
+const clickHandler = (e: MouseEvent, _isDatePicker = false) => {
   isDatePicker.value = _isDatePicker
 
   if (cellClickHook) {
@@ -217,7 +313,7 @@ const clickHandler = (e: MouseEvent, _isDatePicker: boolean = false) => {
   cellClickHandler()
 }
 
-const handleKeydown = (e: KeyboardEvent, _open?: boolean, _isDatePicker: boolean = false) => {
+const handleKeydown = (e: KeyboardEvent, _open?: boolean, _isDatePicker = false) => {
   if (e.key !== 'Enter') {
     e.stopPropagation()
   }
@@ -225,6 +321,10 @@ const handleKeydown = (e: KeyboardEvent, _open?: boolean, _isDatePicker: boolean
   switch (e.key) {
     case 'Enter':
       e.preventDefault()
+      if (isSurveyForm.value) {
+        e.stopPropagation()
+      }
+
       localState.value = tempDate.value
       if (!_isDatePicker) {
         e.stopPropagation()
@@ -279,31 +379,24 @@ useEventListener(document, 'keydown', (e: KeyboardEvent) => {
   // To prevent event listener on non active cell
   if (!active.value) return
 
-  if (
-    e.altKey ||
-    e.ctrlKey ||
-    e.shiftKey ||
-    e.metaKey ||
-    !isGrid.value ||
-    isExpandedForm.value ||
-    isEditColumn.value ||
-    isExpandedFormOpen()
-  ) {
+  if (e.altKey || e.shiftKey || !isGrid.value || isExpandedForm.value || isEditColumn.value || isExpandedFormOpenExist()) {
     return
   }
 
-  switch (e.key) {
-    case ';':
-      localState.value = dayjs(new Date())
-      e.preventDefault()
-      break
-    default:
-      if (!isOpen.value && (datePickerRef.value || timePickerRef.value) && /^[0-9a-z]$/i.test(e.key)) {
-        isClearedInputMode.value = true
-        isDatePicker.value ? datePickerRef.value?.focus() : timePickerRef.value?.focus()
-        editable.value = true
-        open.value = true
+  if (e.metaKey || e.ctrlKey) {
+    if (e.key === ';') {
+      if (isGrid.value && !isExpandedForm.value && !isEditColumn.value) {
+        localState.value = dayjs(new Date())
+        e.preventDefault()
       }
+    } else return
+  }
+
+  if (!isOpen.value && (datePickerRef.value || timePickerRef.value) && /^[0-9a-z]$/i.test(e.key)) {
+    isClearedInputMode.value = true
+    isDatePicker.value ? datePickerRef.value?.focus() : timePickerRef.value?.focus()
+    editable.value = true
+    open.value = true
   }
 })
 
@@ -313,42 +406,6 @@ watch(editable, (nextValue) => {
     open.value = true
   }
 })
-
-const handleUpdateValue = (e: Event, _isDatePicker: boolean) => {
-  let targetValue = (e.target as HTMLInputElement).value
-
-  if (_isDatePicker) {
-    if (!targetValue) {
-      tempDate.value = undefined
-      return
-    }
-
-    const date = dayjs(targetValue, dateFormat.value)
-
-    if (date.isValid()) {
-      if (localState.value) {
-        tempDate.value = dayjs(`${date.format('YYYY-MM-DD')} ${localState.value.format(timeFormat.value)}`)
-      } else {
-        tempDate.value = date
-      }
-    }
-  }
-
-  if (!_isDatePicker) {
-    if (!targetValue) {
-      tempDate.value = dayjs(dayjs().format('YYYY-MM-DD'))
-      return
-    }
-
-    if (timeFormat.value === 'HH:mm' && targetValue.length > 5) {
-      targetValue = targetValue.slice(0, 5)
-    }
-
-    if (isValidTimeFormat(targetValue, timeFormat.value)) {
-      tempDate.value = dayjs(`${(tempDate.value ?? dayjs()).format('YYYY-MM-DD')} ${targetValue}`)
-    }
-  }
-}
 
 function handleSelectDate(value?: dayjs.Dayjs) {
   if (value && localState.value) {
@@ -378,35 +435,37 @@ function handleSelectTime(value: dayjs.Dayjs) {
   open.value = false
 }
 
-const selectedTime = computed(() => {
-  const result = {
-    value: '',
-    label: '',
-  }
-  if (localState.value) {
-    const time = localState.value.format(timeFormat.value)
-
-    const [hours, minutes] = time.split(':')
-
-    result.value = `${hours}:${minutes}`
-
-    result.label = time
-  }
-
-  return result
-})
-
 const timeCellMaxWidth = computed(() => {
   return {
-    [timeFormats[0]]: 'max-w-[65px]',
-    [timeFormats[1]]: 'max-w-[80px]',
-    [timeFormats[2]]: 'max-w-[110px]',
-  }[timeFormat.value]
+    [timeFormats[0]]: {
+      12: 'max-w-[85px]',
+      24: 'max-w-[65px]',
+    },
+    [timeFormats[1]]: {
+      12: 'max-w-[100px]',
+      24: 'max-w-[80px]',
+    },
+    [timeFormats[2]]: {
+      12: 'max-w-[130px]',
+      24: 'max-w-[110px]',
+    },
+  }[timeFormat.value][parseProp(column.value.meta).is12hrFormat ? 12 : 24]
 })
+
+const cellValue = computed(
+  () =>
+    localState.value?.format(parseProp(column.value.meta).is12hrFormat ? timeFormatsObj[timeFormat.value] : timeFormat.value) ??
+    '',
+)
+
+const currentDate = ($event) => {
+  open.value = false
+  emit('currentDate', $event)
+}
 </script>
 
 <template>
-  <div class="nc-cell-field group relative">
+  <div v-bind="$attrs" class="nc-cell-field relative">
     <NcDropdown
       :visible="isOpen"
       :placement="isDatePicker ? 'bottomLeft' : 'bottomRight'"
@@ -418,54 +477,69 @@ const timeCellMaxWidth = computed(() => {
     >
       <div
         :title="localState?.format(dateTimeFormat)"
-        class="nc-date-picker ant-picker-input flex justify-between gap-2 relative group !w-auto"
+        class="nc-date-picker ant-picker-input flex relative !w-auto gap-2"
+        :class="{
+          'justify-between': !isColDisabled,
+        }"
       >
         <div
-          class="flex-none hover:bg-gray-100 px-1 rounded-md box-border w-[60%] max-w-[110px]"
+          class="flex-none rounded-md box-border w-[60%] max-w-[110px]"
           :class="{
             'py-0': isForm,
-            'py-0.5': !isForm,
+            'py-0.5': !isForm && !isColDisabled,
             'bg-gray-100': isDatePicker && isOpen,
+            'hover:bg-gray-100 px-1': !isColDisabled,
           }"
         >
           <input
+            v-if="!rawReadOnly"
             ref="datePickerRef"
             :value="localState?.format(dateFormat) ?? ''"
             :placeholder="typeof placeholder === 'string' ? placeholder : placeholder?.date"
             class="nc-date-input w-full !truncate border-transparent outline-none !text-current !bg-transparent !focus:(border-none outline-none ring-transparent)"
-            :readonly="!!isMobileMode || isColDisabled"
+            :readonly="isColDisabled"
             @focus="onFocus(true)"
+            @blur="onBlur($event, true)"
             @keydown="handleKeydown($event, isOpen, true)"
             @mouseup.stop
             @mousedown.stop
             @click.stop="clickHandler($event, true)"
             @input="handleUpdateValue($event, true)"
           />
+          <span v-else>
+            {{ localState?.format(dateFormat) ?? '' }}
+          </span>
         </div>
         <div
-          class="flex-none hover:bg-gray-100 px-1 rounded-md box-border flex-1"
+          class="flex-none rounded-md box-border flex-1"
           :class="[
             `${timeCellMaxWidth}`,
             {
               'py-0': isForm,
-              'py-0.5': !isForm,
+              'py-0.5': !isForm && !isColDisabled,
               'bg-gray-100': !isDatePicker && isOpen,
+              'hover:bg-gray-100 px-1': !isColDisabled,
             },
           ]"
         >
           <input
+            v-if="!rawReadOnly"
             ref="timePickerRef"
-            :value="selectedTime.value ? `${selectedTime.label}` : ''"
+            :value="cellValue"
             :placeholder="typeof placeholder === 'string' ? placeholder : placeholder?.time"
             class="nc-time-input w-full !truncate border-transparent outline-none !text-current !bg-transparent !focus:(border-none outline-none ring-transparent)"
-            :readonly="!!isMobileMode || isColDisabled"
+            :readonly="isColDisabled"
             @focus="onFocus(false)"
+            @blur="onBlur($event, false)"
             @keydown="handleKeydown($event, open)"
             @mouseup.stop
             @mousedown.stop
             @click.stop="clickHandler($event, false)"
             @input="handleUpdateValue($event, false)"
           />
+          <span v-else>
+            {{ cellValue }}
+          </span>
         </div>
       </div>
 
@@ -483,7 +557,9 @@ const timeCellMaxWidth = computed(() => {
             :is-open="isOpen"
             type="date"
             size="medium"
+            :show-current-date-option="showCurrentDateOption"
             @update:selected-date="handleSelectDate"
+            @current-date="currentDate"
           />
 
           <template v-else>
@@ -491,8 +567,11 @@ const timeCellMaxWidth = computed(() => {
               :selected-date="localState"
               :min-granularity="30"
               is-min-granularity-picker
+              :is12hr-format="!!parseProp(column.meta).is12hrFormat"
               :is-open="isOpen"
+              :show-current-date-option="showCurrentDateOption"
               @update:selected-date="handleSelectTime"
+              @current-date="currentDate"
             />
           </template>
         </div>
@@ -500,17 +579,20 @@ const timeCellMaxWidth = computed(() => {
     </NcDropdown>
 
     <GeneralIcon
-      v-if="localState && (isExpandedForm || isForm || !isGrid)"
+      v-if="localState && (isExpandedForm || isForm || !isGrid || isEditColumn) && !readOnly"
       icon="closeCircle"
-      class="h-4 w-4 absolute right-0 top-[50%] transform -translate-y-1/2 invisible group-hover:visible cursor-pointer"
+      class="nc-clear-date-time-icon nc-action-icon h-4 w-4 absolute right-0 top-[50%] transform -translate-y-1/2 invisible cursor-pointer"
       @click.stop="handleSelectDate()"
     />
   </div>
+
   <div v-if="!editable && isGrid" class="absolute inset-0 z-90 cursor-pointer"></div>
 </template>
 
 <style scoped>
-:deep(.ant-picker-input > input) {
-  @apply !text-current;
+.nc-cell-field {
+  &:hover .nc-clear-date-time-icon {
+    @apply visible;
+  }
 }
 </style>

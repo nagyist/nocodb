@@ -76,18 +76,19 @@ watch(
 </script>
 
 <template>
+  <!-- eslint-disable vue/use-v-on-exact -->
   <input
     v-if="!readOnly && editEnabled"
     :ref="focus"
     v-model="vModel"
     class="nc-cell-field w-full outline-none py-1"
-    :placeholder="isEditColumn ? $t('labels.optional') : ''"
     @blur="editEnabled = false"
     @keydown.down.stop
     @keydown.left.stop
     @keydown.right.stop
     @keydown.up.stop
     @keydown.delete.stop
+    @keydown.alt.stop
     @selectstart.capture.stop
     @mousedown.stop
     @paste.prevent="onPaste"
@@ -98,7 +99,7 @@ watch(
   <nuxt-link
     v-else-if="validEmail"
     no-ref
-    class="py-1 underline hover:opacity-75 inline-block nc-cell-field-link max-w-full"
+    class="py-1 underline inline-block nc-cell-field-link max-w-full"
     :href="`mailto:${vModel}`"
     target="_blank"
     :tabindex="readOnly ? -1 : 0"

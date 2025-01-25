@@ -1,8 +1,8 @@
-import multer from 'multer';
 import { Module } from '@nestjs/common';
-import { MulterModule } from '@nestjs/platform-express';
 
 /* Modules */
+import { MulterModule } from '@nestjs/platform-express';
+import multer from 'multer';
 import { EventEmitterModule } from '~/modules/event-emitter/event-emitter.module';
 import { JobsModule } from '~/modules/jobs/jobs.module';
 
@@ -22,7 +22,11 @@ import { UsersController } from '~/controllers/users/users.controller';
 import { UsersService } from '~/services/users/users.service';
 
 /* Metas */
-import { NC_ATTACHMENT_FIELD_SIZE } from '~/constants';
+import {
+  NC_ATTACHMENT_FIELD_SIZE,
+  NC_MAX_ATTACHMENTS_ALLOWED,
+  NC_NON_ATTACHMENT_FIELD_SIZE,
+} from '~/constants';
 import { MetaService } from '~/meta/meta.service';
 import { ApiDocsController } from '~/controllers/api-docs/api-docs.controller';
 import { ApiTokensController } from '~/controllers/api-tokens.controller';
@@ -33,6 +37,7 @@ import { SourcesController } from '~/controllers/sources.controller';
 import { CachesController } from '~/controllers/caches.controller';
 import { CalendarsController } from '~/controllers/calendars.controller';
 import { ColumnsController } from '~/controllers/columns.controller';
+import { CommentsController } from '~/controllers/comments.controller';
 import { FiltersController } from '~/controllers/filters.controller';
 import { FormColumnsController } from '~/controllers/form-columns.controller';
 import { FormsController } from '~/controllers/forms.controller';
@@ -64,6 +69,7 @@ import { SourcesService } from '~/services/sources.service';
 import { CachesService } from '~/services/caches.service';
 import { CalendarsService } from '~/services/calendars.service';
 import { ColumnsService } from '~/services/columns.service';
+import { CommentsService } from '~/services/comments.service';
 import { FiltersService } from '~/services/filters.service';
 import { FormColumnsService } from '~/services/form-columns.service';
 import { FormsService } from '~/services/forms.service';
@@ -92,13 +98,14 @@ import { ViewsService } from '~/services/views.service';
 import { ApiDocsService } from '~/services/api-docs/api-docs.service';
 import { BaseUsersController } from '~/controllers/base-users.controller';
 import { BaseUsersService } from '~/services/base-users/base-users.service';
-import { NotificationsService } from '~/services/notifications.service';
+import { NotificationsService } from '~/services/notifications/notifications.service';
 import { NotificationsController } from '~/controllers/notifications.controller';
-import { NotificationsGateway } from '~/gateways/notifications/notifications.gateway';
 import { CommandPaletteService } from '~/services/command-palette.service';
 import { CommandPaletteController } from '~/controllers/command-palette.controller';
 import { ExtensionsService } from '~/services/extensions.service';
 import { ExtensionsController } from '~/controllers/extensions.controller';
+import { JobsMetaService } from '~/services/jobs-meta.service';
+import { JobsMetaController } from '~/controllers/jobs-meta.controller';
 
 /* Datas */
 import { DataTableController } from '~/controllers/data-table.controller';
@@ -119,6 +126,24 @@ import { PublicDatasExportService } from '~/services/public-datas-export.service
 import { PublicDatasService } from '~/services/public-datas.service';
 import { CalendarDatasController } from '~/controllers/calendars-datas.controller';
 import { CalendarDatasService } from '~/services/calendar-datas.service';
+import { IntegrationsController } from '~/controllers/integrations.controller';
+import { IntegrationsService } from '~/services/integrations.service';
+import { DataV3Service } from '~/services/v3/data-v3.service';
+import { Datav3Controller } from '~/controllers/data-v3.controller';
+import { BaseUsersV3Controller } from '~/controllers/v3/base-users-v3.controller';
+import { BaseUsersV3Service } from '~/services/v3/base-users-v3.service';
+import { BasesV3Controller } from '~/controllers/v3/bases-v3.controller';
+import { BasesV3Service } from '~/services/v3/bases-v3.service';
+import { TablesV3Service } from '~/services/v3/tables-v3.service';
+import { TablesV3Controller } from '~/controllers/v3/tables-v3.controller';
+import { ColumnsV3Controller } from '~/controllers/v3/columns-v3.controller';
+import { ColumnsV3Service } from '~/services/v3/columns-v3.service';
+import { SortsV3Service } from '~/services/v3/sorts-v3.service';
+import { SortsV3Controller } from '~/controllers/v3/sorts-v3.controller';
+import { ViewsV3Controller } from '~/controllers/v3/views-v3.controller';
+import { ViewsV3Service } from '~/services/v3/views-v3.service';
+import { FiltersV3Controller } from '~/controllers/v3/filters-v3.controller';
+import { FiltersV3Service } from '~/services/v3/filters-v3.service';
 
 export const nocoModuleMetadata = {
   imports: [
@@ -127,7 +152,9 @@ export const nocoModuleMetadata = {
     MulterModule.register({
       storage: multer.diskStorage({}),
       limits: {
-        fieldSize: NC_ATTACHMENT_FIELD_SIZE,
+        fieldSize: NC_NON_ATTACHMENT_FIELD_SIZE,
+        fileSize: NC_ATTACHMENT_FIELD_SIZE,
+        files: NC_MAX_ATTACHMENTS_ALLOWED,
       },
     }),
   ],
@@ -148,6 +175,7 @@ export const nocoModuleMetadata = {
           CachesController,
           CalendarsController,
           ColumnsController,
+          CommentsController,
           FiltersController,
           FormColumnsController,
           FormsController,
@@ -164,6 +192,7 @@ export const nocoModuleMetadata = {
           OrgUsersController,
           PluginsController,
           BaseUsersController,
+          BaseUsersV3Controller,
           BasesController,
           PublicMetasController,
           ViewsController,
@@ -176,6 +205,16 @@ export const nocoModuleMetadata = {
           NotificationsController,
           CommandPaletteController,
           ExtensionsController,
+          JobsMetaController,
+          IntegrationsController,
+
+          /* V3 APIs */
+          BasesV3Controller,
+          TablesV3Controller,
+          ColumnsV3Controller,
+          SortsV3Controller,
+          ViewsV3Controller,
+          FiltersV3Controller,
 
           /* Datas */
           DataTableController,
@@ -188,6 +227,7 @@ export const nocoModuleMetadata = {
           OldDatasController,
           PublicDatasController,
           PublicDatasExportController,
+          Datav3Controller,
         ]
       : []),
   ],
@@ -214,6 +254,7 @@ export const nocoModuleMetadata = {
     CachesService,
     CalendarsService,
     ColumnsService,
+    CommentsService,
     FiltersService,
     FormColumnsService,
     FormsService,
@@ -231,6 +272,7 @@ export const nocoModuleMetadata = {
     OrgUsersService,
     PluginsService,
     BaseUsersService,
+    BaseUsersV3Service,
     BasesService,
     PublicMetasService,
     ViewsService,
@@ -241,9 +283,16 @@ export const nocoModuleMetadata = {
     SortsService,
     SharedBasesService,
     NotificationsService,
-    NotificationsGateway,
     CommandPaletteService,
     ExtensionsService,
+    JobsMetaService,
+    IntegrationsService,
+    BasesV3Service,
+    TablesV3Service,
+    ColumnsV3Service,
+    SortsV3Service,
+    ViewsV3Service,
+    FiltersV3Service,
 
     /* Datas */
     DataTableService,
@@ -254,6 +303,7 @@ export const nocoModuleMetadata = {
     OldDatasService,
     PublicDatasService,
     PublicDatasExportService,
+    DataV3Service,
   ],
   exports: [
     /* Generic */
@@ -291,6 +341,8 @@ export const nocoModuleMetadata = {
     /* Datas */
     DatasService,
     BulkDataAliasService,
+    DataTableService,
+    DataV3Service,
   ],
 };
 

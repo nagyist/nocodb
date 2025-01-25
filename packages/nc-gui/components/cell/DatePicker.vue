@@ -5,19 +5,22 @@ import { isDateMonthFormat, isSystemColumn } from 'nocodb-sdk'
 interface Props {
   modelValue?: string | null
   isPk?: boolean
+  showCurrentDateOption?: boolean | 'disabled'
 }
 
 const { modelValue, isPk } = defineProps<Props>()
 
-const emit = defineEmits(['update:modelValue'])
+const emit = defineEmits(['update:modelValue', 'currentDate'])
 
 const { t } = useI18n()
 
-const { showNull, isMobileMode } = useGlobal()
+const { showNull } = useGlobal()
 
 const columnMeta = inject(ColumnInj, null)!
 
 const readOnly = inject(ReadonlyInj, ref(false))
+
+const rawReadOnly = inject(RawReadonlyInj, ref(false))
 
 const isEditColumn = inject(EditColumnInj, ref(false))
 
@@ -28,6 +31,8 @@ const editable = inject(EditModeInj, ref(false))
 const isGrid = inject(IsGridInj, ref(false))
 
 const isForm = inject(IsFormInj, ref(false))
+
+const isSurveyForm = inject(IsSurveyFormInj, ref(false))
 
 const isExpandedForm = inject(IsExpandedFormOpenInj, ref(false))
 
@@ -65,29 +70,64 @@ const localState = computed({
   set(val?: dayjs.Dayjs) {
     isClearedInputMode.value = false
 
-    if (!val) {
-      emit('update:modelValue', null)
-      return
-    }
-
-    if (picker.value === 'month') {
-      // reset day to 1st
-      val = dayjs(val).date(1)
-    }
-
-    if (val.isValid()) {
-      emit('update:modelValue', val?.format('YYYY-MM-DD'))
-    }
+    saveChanges(val)
 
     open.value = false
   },
 })
+
+const savingValue = ref()
+
+function saveChanges(val?: dayjs.Dayjs) {
+  if (!val) {
+    if (savingValue.value === val) {
+      return
+    }
+
+    savingValue.value = null
+    emit('update:modelValue', null)
+    return
+  }
+
+  if (picker.value === 'month') {
+    // reset day to 1st
+    val = dayjs(val).date(1)
+  }
+
+  if (val.isValid()) {
+    const formattedValue = val?.format('YYYY-MM-DD')
+
+    if (savingValue.value === formattedValue) {
+      return
+    }
+
+    savingValue.value = formattedValue
+    emit('update:modelValue', formattedValue)
+  }
+}
 
 watchEffect(() => {
   if (localState.value) {
     tempDate.value = localState.value
   }
 })
+
+const handleUpdateValue = (e: Event, save = false, valueToSave?: dayjs.Dayjs) => {
+  const targetValue = valueToSave || (e.target as HTMLInputElement).value
+  if (!targetValue) {
+    tempDate.value = undefined
+    return
+  }
+  const value = dayjs(targetValue, dateFormat.value)
+
+  if (value.isValid()) {
+    tempDate.value = value
+
+    if (save) {
+      saveChanges(value)
+    }
+  }
+}
 
 const randomClass = `picker_${Math.floor(Math.random() * 99999)}`
 
@@ -99,6 +139,12 @@ onClickOutside(datePickerRef, (e) => {
 })
 
 const onBlur = (e) => {
+  const value = (e?.target as HTMLInputElement)?.value
+
+  if (value && dayjs(value).isValid()) {
+    handleUpdateValue(e, true, dayjs(dayjs(value).format(dateFormat.value)))
+  }
+
   if (
     (e?.relatedTarget as HTMLElement)?.closest(`.${randomClass}, .nc-${randomClass}`) ||
     (e?.target as HTMLElement)?.closest(`.${randomClass}, .nc-${randomClass}`)
@@ -142,11 +188,10 @@ watch(editable, (nextValue) => {
 const placeholder = computed(() => {
   if (
     ((isForm.value || isExpandedForm.value) && !isDateInvalid.value) ||
-    (isGrid.value && !showNull.value && !isDateInvalid.value && !isSystemColumn(columnMeta.value) && active.value)
+    (isGrid.value && !showNull.value && !isDateInvalid.value && !isSystemColumn(columnMeta.value) && active.value) ||
+    isEditColumn.value
   ) {
     return dateFormat.value
-  } else if (isEditColumn.value && (modelValue === '' || modelValue === null)) {
-    return t('labels.optional')
   } else if (modelValue === null && showNull.value) {
     return t('general.null').toUpperCase()
   } else if (isDateInvalid.value) {
@@ -193,6 +238,9 @@ const handleKeydown = (e: KeyboardEvent, _open?: boolean) => {
   switch (e.key) {
     case 'Enter':
       e.preventDefault()
+      if (isSurveyForm.value) {
+        e.stopPropagation()
+      }
       localState.value = tempDate.value
       open.value = !_open
 
@@ -237,50 +285,35 @@ useEventListener(document, 'keydown', (e: KeyboardEvent) => {
   // To prevent event listener on non active cell
   if (!active.value) return
 
-  if (
-    e.altKey ||
-    e.ctrlKey ||
-    e.shiftKey ||
-    e.metaKey ||
-    !isGrid.value ||
-    isExpandedForm.value ||
-    isEditColumn.value ||
-    isExpandedFormOpen()
-  ) {
+  if (e.altKey || e.shiftKey || !isGrid.value || isExpandedForm.value || isEditColumn.value || isExpandedFormOpenExist()) {
     return
   }
 
-  switch (e.key) {
-    case ';':
-      localState.value = dayjs(new Date())
-      e.preventDefault()
-      break
-    default:
-      if (!isOpen.value && datePickerRef.value && /^[0-9a-z]$/i.test(e.key)) {
-        isClearedInputMode.value = true
-        datePickerRef.value.focus()
-        editable.value = true
-        open.value = true
+  if (e.metaKey || e.ctrlKey) {
+    if (e.key === ';') {
+      if (isGrid.value && !isExpandedForm.value && !isEditColumn.value) {
+        localState.value = dayjs(new Date())
+        e.preventDefault()
       }
+    } else return
+  }
+
+  if (!isOpen.value && datePickerRef.value && /^[0-9a-z]$/i.test(e.key)) {
+    isClearedInputMode.value = true
+    datePickerRef.value.focus()
+    editable.value = true
+    open.value = true
   }
 })
-
-const handleUpdateValue = (e: Event) => {
-  const targetValue = (e.target as HTMLInputElement).value
-  if (!targetValue) {
-    tempDate.value = undefined
-    return
-  }
-  const value = dayjs(targetValue, dateFormat.value)
-
-  if (value.isValid()) {
-    tempDate.value = value
-  }
-}
 
 function handleSelectDate(value?: dayjs.Dayjs) {
   tempDate.value = value
   localState.value = value
+  open.value = false
+}
+
+const currentDate = ($event) => {
+  emit('currentDate', $event)
   open.value = false
 }
 </script>
@@ -295,16 +328,18 @@ function handleSelectDate(value?: dayjs.Dayjs) {
     :overlay-class-name="`${randomClass} nc-picker-date ${open ? 'active' : ''} !min-w-[260px]`"
   >
     <div
+      v-bind="$attrs"
       :title="localState?.format(dateFormat)"
-      class="nc-date-picker h-full flex items-center justify-between ant-picker-input relative group"
+      class="nc-date-picker h-full flex items-center justify-between ant-picker-input relative"
     >
       <input
+        v-if="!rawReadOnly"
         ref="datePickerRef"
         type="text"
         :value="localState?.format(dateFormat) ?? ''"
         :placeholder="placeholder"
         class="nc-date-input border-none outline-none !text-current bg-transparent !focus:(border-none outline-none ring-transparent)"
-        :readonly="readOnly || !!isMobileMode"
+        :readonly="readOnly"
         @blur="onBlur"
         @focus="onFocus"
         @keydown="handleKeydown($event, open)"
@@ -313,11 +348,14 @@ function handleSelectDate(value?: dayjs.Dayjs) {
         @click="clickHandler"
         @input="handleUpdateValue"
       />
+      <span v-else>
+        {{ localState?.format(dateFormat) ?? '' }}
+      </span>
 
       <GeneralIcon
-        v-if="localState"
+        v-if="localState && !readOnly"
         icon="closeCircle"
-        class="absolute right-0 top-[50%] transform -translate-y-1/2 invisible group-hover:visible cursor-pointer"
+        class="nc-clear-date-icon nc-action-icon absolute right-0 top-[50%] transform -translate-y-1/2 invisible cursor-pointer"
         @click.stop="handleSelectDate()"
       />
     </div>
@@ -331,16 +369,19 @@ function handleSelectDate(value?: dayjs.Dayjs) {
           :is-open="isOpen"
           type="month"
           size="medium"
+          :show-current-date-option="showCurrentDateOption"
+          @current-date="currentDate"
         />
         <NcDatePicker
           v-else
           v-model:page-date="tempDate"
           :is-open="isOpen"
           :selected-date="localState"
-          :is-monday-first="false"
           type="date"
           size="medium"
+          :show-current-date-option="showCurrentDateOption"
           @update:selected-date="handleSelectDate"
+          @current-date="currentDate"
         />
       </div>
     </template>
@@ -349,7 +390,9 @@ function handleSelectDate(value?: dayjs.Dayjs) {
 </template>
 
 <style scoped>
-:deep(.ant-picker-input > input) {
-  @apply !text-current;
+.nc-cell-field {
+  &:hover .nc-clear-date-icon {
+    @apply visible;
+  }
 }
 </style>
