@@ -43,7 +43,7 @@ test.describe('LTAR create & update', () => {
       title: 'Link1-2mm',
       type: 'Links',
       childTable: 'Sheet2',
-      relationType: 'Many To many',
+      relationType: 'Many to Many',
     });
 
     await dashboard.treeView.openTable({ title: 'Sheet2', networkResponse: false });
@@ -153,7 +153,6 @@ test.describe('LTAR create & update', () => {
       }
     }
 
-    await dashboard.closeTab({ title: 'Sheet2' });
     await dashboard.treeView.openTable({ title: 'Sheet1' });
 
     // Verify fields and toggle the visibility

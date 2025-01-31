@@ -27,7 +27,7 @@ const options = computed<ColumnType[]>(
           return true
         }
         if (isSystemColumn(metaColumnById?.value?.[c.id!])) {
-          if (isHiddenCol(c)) {
+          if (isHiddenCol(c, meta.value)) {
             /** ignore mm relation column, created by and last modified by system field */
             return false
           }
@@ -36,7 +36,12 @@ const options = computed<ColumnType[]>(
             /** hide system columns if not enabled */
             showSystemFields.value
           )
-        } else if (c.uidt === UITypes.QrCode || c.uidt === UITypes.Barcode || c.uidt === UITypes.ID) {
+        } else if (
+          c.uidt === UITypes.QrCode ||
+          c.uidt === UITypes.Barcode ||
+          c.uidt === UITypes.ID ||
+          c.uidt === UITypes.Button
+        ) {
           return false
         } else {
           /** ignore hasmany and manytomany relations if it's using within sort menu */

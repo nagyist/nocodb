@@ -17,7 +17,7 @@ const { user: loggedInUser } = useGlobal()
 
 const { copy } = useCopy()
 
-const { sorts, loadSorts, handleGetSortedData, toggleSort } = useUserSorts('Org')
+const { sorts, sortDirection, loadSorts, handleGetSortedData, saveOrUpdate: saveOrUpdateUserSort } = useUserSorts('Org')
 
 const users = ref<UserType[]>([])
 
@@ -163,141 +163,173 @@ const openDeleteModal = (user: UserType) => {
   deleteModalInfo.value = user
   isOpen.value = true
 }
+
+const orderBy = computed<Record<string, SordDirectionType>>({
+  get: () => {
+    return sortDirection.value
+  },
+  set: (value: Record<string, SordDirectionType>) => {
+    // Check if value is an empty object
+    if (Object.keys(value).length === 0) {
+      saveOrUpdateUserSort({})
+      return
+    }
+
+    const [field, direction] = Object.entries(value)[0]
+
+    saveOrUpdateUserSort({
+      field,
+      direction,
+    })
+  },
+})
+
+const columns = [
+  {
+    key: 'email',
+    title: t('objects.users'),
+    minWidth: 220,
+    dataIndex: 'email',
+    showOrderBy: true,
+  },
+  {
+    key: 'role',
+    title: t('general.access'),
+    basis: '30%',
+    minWidth: 272,
+    dataIndex: 'roles',
+    showOrderBy: true,
+  },
+  {
+    key: 'action',
+    title: t('labels.actions'),
+    width: 110,
+    minWidth: 110,
+    justify: 'justify-end',
+  },
+] as NcTableColumnProps[]
+
+const userRoleOptions = [
+  {
+    title: 'objects.roleType.orgLevelCreator',
+    subtitle: 'msg.info.roles.orgCreator',
+    value: OrgUserRoles.CREATOR,
+  },
+  {
+    title: 'objects.roleType.orgLevelViewer',
+    subtitle: 'msg.info.roles.orgViewer',
+    value: OrgUserRoles.VIEWER,
+  },
+]
 </script>
 
 <template>
-  <div data-testid="nc-super-user-list" class="h-full">
-    <div class="max-w-195 mx-auto h-full">
-      <div class="text-2xl text-left font-weight-bold mb-4" data-rec="true">{{ $t('title.userMgmt') }}</div>
-      <div class="py-2 flex gap-4 items-center justify-between">
-        <a-input
-          v-model:value="searchText"
-          class="!max-w-90 !rounded-md"
-          :placeholder="$t('title.searchMembers')"
-          @change="loadUsers()"
-        >
-          <template #prefix>
-            <PhMagnifyingGlassBold class="!h-3.5 text-gray-500" />
-          </template>
-        </a-input>
-        <div class="flex gap-3 items-center justify-center">
-          <component :is="iconMap.reload" class="cursor-pointer" @click="loadUsers(currentPage, currentLimit)" />
-          <NcButton data-testid="nc-super-user-invite" size="small" type="primary" @click="openInviteModal">
-            <div class="flex items-center gap-1" data-rec="true">
-              <component :is="iconMap.plus" />
-              {{ $t('activity.inviteUser') }}
+  <div class="flex flex-col" data-testid="nc-super-user-list">
+    <NcPageHeader>
+      <template #icon>
+        <GeneralIcon icon="users" class="flex-none text-gray-700 h-5 w-5" />
+      </template>
+      <template #title>
+        <span data-rec="true">
+          {{ $t('title.userManagement') }}
+        </span>
+      </template>
+    </NcPageHeader>
+    <div class="nc-content-max-w p-6 h-[calc(100vh_-_100px)] flex flex-col gap-6 overflow-auto nc-scrollbar-thin">
+      <div class="h-full">
+        <div class="max-w-195 mx-auto h-full">
+          <div class="flex gap-4 items-center justify-between">
+            <a-input
+              v-model:value="searchText"
+              class="!max-w-90 !rounded-md"
+              :placeholder="$t('title.searchMembers')"
+              @change="loadUsers()"
+            >
+              <template #prefix>
+                <PhMagnifyingGlassBold class="!h-3.5 text-gray-500" />
+              </template>
+            </a-input>
+            <div class="flex gap-3 items-center justify-center">
+              <component :is="iconMap.reload" class="cursor-pointer" @click="loadUsers(currentPage, currentLimit)" />
+              <NcButton data-testid="nc-super-user-invite" size="small" type="primary" @click="openInviteModal">
+                <div class="flex items-center gap-1" data-rec="true">
+                  <component :is="iconMap.plus" />
+                  {{ $t('activity.inviteUser') }}
+                </div>
+              </NcButton>
             </div>
-          </NcButton>
-        </div>
-      </div>
-      <div class="w-full rounded-md max-w-250 h-[calc(100%-12rem)] rounded-md overflow-hidden mt-5">
-        <div class="flex w-full bg-gray-50 border-1 rounded-t-md">
-          <LazyAccountHeaderWithSorter
-            class="py-3.5 text-gray-500 font-medium text-3.5 w-2/3 text-start pl-6"
-            :header="$t('objects.users')"
-            :active-sort="sorts"
-            field="email"
-            :toggle-sort="toggleSort"
-          />
-
-          <LazyAccountHeaderWithSorter
-            class="py-3.5 text-gray-500 font-medium text-3.5 w-1/3 text-start"
-            :header="$t('general.access')"
-            :active-sort="sorts"
-            field="roles"
-            :toggle-sort="toggleSort"
-          />
-
-          <div class="flex py-3.5 text-gray-500 font-medium text-3.5 w-28 justify-end mr-4" data-rec="true">
-            {{ $t('labels.action') }}
           </div>
-        </div>
-        <div v-if="isLoading" class="flex items-center justify-center text-center h-[513px]">
-          <GeneralLoader size="xlarge" />
-        </div>
-        <!-- if users are empty -->
-        <div v-else-if="!users.length" class="flex items-center justify-center text-center h-full">
-          <a-empty :image="Empty.PRESENTED_IMAGE_SIMPLE" :description="$t('labels.noData')" />
-        </div>
-        <section v-else class="tbody h-[calc(100%-4rem)] nc-scrollbar-md border-t-0 !overflow-auto">
-          <div
-            v-for="el of sortedUsers"
-            :key="el.id"
-            data-testid="nc-token-list"
-            class="user flex py-3 justify-around px-1 border-b-1 border-l-1 border-r-1"
-            :class="{
-              'py-4': el.roles?.includes('super'),
-            }"
+          <NcTable
+            v-model:order-by="orderBy"
+            :columns="columns"
+            :data="sortedUsers"
+            :is-data-loading="isLoading"
+            class="h-[calc(100%-58px)] max-w-250 mt-6"
           >
-            <div class="text-3.5 text-start w-2/3 pl-5 flex items-center">
-              <NcTooltip v-if="el.display_name">
-                <template #title>
-                  {{ el.email }}
-                </template>
-                <GeneralTruncateText :length="29">
+            <template #bodyCell="{ column, record: el }">
+              <div v-if="column.key === 'email'" class="w-full">
+                <NcTooltip v-if="el.display_name" class="truncate max-w-full">
+                  <template #title>
+                    {{ el.email }}
+                  </template>
                   {{ el.display_name }}
-                </GeneralTruncateText>
-              </NcTooltip>
-              <GeneralTruncateText v-else :length="29">
-                {{ el.email }}
-              </GeneralTruncateText>
-            </div>
-            <div class="text-3.5 text-start w-1/3">
-              <div v-if="el?.roles?.includes('super')" class="font-weight-bold" data-rec="true">
-                {{ $t('labels.superAdmin') }}
-              </div>
-              <NcSelect
-                v-else-if="el.id !== loggedInUser?.id"
-                v-model:value="el.roles"
-                class="w-55 nc-user-roles"
-                :dropdown-match-select-width="false"
-                dropdown-class-name="max-w-64"
-                @change="updateRole(el.id, el.roles as string)"
-              >
-                <a-select-option
-                  class="nc-users-list-role-option"
-                  :value="OrgUserRoles.CREATOR"
-                  :label="$t(`objects.roleType.orgLevelCreator`)"
-                >
-                  <div class="flex items-center gap-1 justify-between">
-                    <div data-rec="true">{{ $t(`objects.roleType.orgLevelCreator`) }}</div>
-                    <GeneralIcon
-                      v-if="el?.roles === OrgUserRoles.CREATOR"
-                      id="nc-selected-item-icon"
-                      icon="check"
-                      class="w-4 h-4 text-primary"
-                    />
-                  </div>
-                  <div class="text-gray-500 text-xs whitespace-normal" data-rec="true">
-                    {{ $t('msg.info.roles.orgCreator') }}
-                  </div>
-                </a-select-option>
+                </NcTooltip>
 
-                <a-select-option
-                  class="nc-users-list-role-option"
-                  :value="OrgUserRoles.VIEWER"
-                  :label="$t(`objects.roleType.orgLevelViewer`)"
-                >
-                  <div class="flex items-center gap-1 justify-between">
-                    <div data-rec="true">{{ $t(`objects.roleType.orgLevelViewer`) }}</div>
-                    <GeneralIcon
-                      v-if="el.roles === OrgUserRoles.VIEWER"
-                      id="nc-selected-item-icon"
-                      icon="check"
-                      class="w-4 h-4 text-primary"
-                    />
-                  </div>
-                  <div class="text-gray-500 text-xs whitespace-normal" data-rec="true">
-                    {{ $t('msg.info.roles.orgViewer') }}
-                  </div>
-                </a-select-option>
-              </NcSelect>
-              <div v-else class="font-weight-bold" data-rec="true">
-                {{ $t(`objects.roleType.orgLevelCreator`) }}
+                <NcTooltip v-else class="truncate max-w-full" show-on-truncate-only>
+                  <template #title>
+                    {{ el.email }}
+                  </template>
+                  {{ el.email }}
+                </NcTooltip>
               </div>
-            </div>
-            <span class="w-26 flex items-center justify-end mr-4">
+              <template v-if="column.key === 'role'">
+                <div v-if="el?.roles?.includes('super')" class="font-weight-bold" data-rec="true">
+                  {{ $t('labels.superAdmin') }}
+                </div>
+                <NcSelect
+                  v-else-if="el.id !== loggedInUser?.id"
+                  v-show="!isEeUI"
+                  v-model:value="el.roles"
+                  class="w-55 nc-user-roles"
+                  :dropdown-match-select-width="false"
+                  dropdown-class-name="max-w-64"
+                  @change="updateRole(el.id, el.roles as string)"
+                >
+                  <a-select-option
+                    v-for="(option, idx) of userRoleOptions"
+                    :key="idx"
+                    class="nc-users-list-role-option"
+                    :value="option.value"
+                  >
+                    <div class="w-full flex items-start gap-1">
+                      <div class="flex-1">
+                        <NcTooltip show-on-truncate-only class="truncate" data-rec="true">
+                          <template #title>
+                            {{ $t(option.title) }}
+                          </template>
+                          {{ $t(option.title) }}
+                        </NcTooltip>
+
+                        <div class="nc-select-hide-item text-gray-500 text-xs whitespace-normal" data-rec="true">
+                          {{ $t(option.subtitle) }}
+                        </div>
+                      </div>
+
+                      <GeneralIcon
+                        v-if="el.roles === option.value"
+                        id="nc-selected-item-icon"
+                        icon="check"
+                        class="w-4 h-4 text-primary"
+                      />
+                    </div>
+                  </a-select-option>
+                </NcSelect>
+                <div v-else class="font-weight-bold" data-rec="true">
+                  {{ $t(`objects.roleType.orgLevelCreator`) }}
+                </div>
+              </template>
               <div
+                v-if="column.key === 'action'"
                 class="flex items-center gap-2"
                 :class="{
                   'opacity-0 pointer-events-none': el.roles?.includes('super'),
@@ -311,7 +343,7 @@ const openDeleteModal = (user: UserType) => {
                   </NcButton>
 
                   <template #overlay>
-                    <NcMenu>
+                    <NcMenu variant="small">
                       <template v-if="!el.roles?.includes('super')">
                         <!-- Resend invite Email -->
                         <NcMenuItem @click="resendInvite(el)">
@@ -338,47 +370,53 @@ const openDeleteModal = (user: UserType) => {
                   </template>
                 </NcDropdown>
               </div>
-            </span>
-          </div>
-          <div
-            v-if="sortedUsers.length === 1"
-            class="user pt-12 pb-4 px-2 flex flex-col items-center gap-6 text-center border-b-1 border-l-1 border-r-1"
-          >
-            <div class="text-2xl text-gray-800 font-bold">
-              {{ $t('placeholder.inviteYourTeam') }}
-            </div>
-            <div class="text-sm text-gray-700">
-              {{ $t('placeholder.inviteYourTeamLabel') }}
-            </div>
-            <img src="~assets/img/placeholder/invite-team.png" class="!w-[30rem] flex-none" />
-          </div>
-        </section>
-      </div>
-      <div v-if="pagination.total > 10" class="flex items-center justify-center mt-4">
-        <a-pagination
-          v-model:current="currentPage"
-          :total="pagination.total"
-          show-less-items
-          @change="loadUsers(currentPage, currentLimit)"
-        />
-      </div>
-      <GeneralDeleteModal v-model:visible="isOpen" entity-name="User" :on-delete="() => deleteUser()">
-        <template #entity-preview>
-          <span>
-            <div class="flex flex-row items-center py-2.25 px-2.5 bg-gray-50 rounded-lg text-gray-700 mb-4">
-              <GeneralIcon icon="account" class="nc-view-icon"></GeneralIcon>
+            </template>
+            <template #extraRow>
               <div
-                class="text-ellipsis overflow-hidden select-none w-full pl-1.75"
-                :style="{ wordBreak: 'keep-all', whiteSpace: 'nowrap', display: 'inline' }"
+                v-if="pagination.total === 1 && sortedUsers.length === 1"
+                class="w-full pt-12 pb-4 px-2 flex flex-col items-center gap-6 text-center"
               >
-                {{ deleteModalInfo?.email }}
+                <div class="text-2xl text-gray-800 font-bold">
+                  {{ $t('placeholder.inviteYourTeam') }}
+                </div>
+                <div class="text-sm text-gray-700">
+                  {{ $t('placeholder.inviteYourTeamLabel') }}
+                </div>
+                <img src="~assets/img/placeholder/invite-team.png" class="!w-[30rem] flex-none" />
               </div>
-            </div>
-          </span>
-        </template>
-      </GeneralDeleteModal>
+            </template>
 
-      <LazyAccountUsersModal :key="userMadalKey" :show="showUserModal" @closed="showUserModal = false" @reload="loadUsers" />
+            <template #tableFooter>
+              <div v-if="pagination.total > 10" class="px-4 py-2 flex items-center justify-center">
+                <a-pagination
+                  v-model:current="currentPage"
+                  :total="pagination.total"
+                  show-less-items
+                  @change="loadUsers(currentPage, currentLimit)"
+                />
+              </div>
+            </template>
+          </NcTable>
+
+          <GeneralDeleteModal v-model:visible="isOpen" entity-name="User" :on-delete="() => deleteUser()">
+            <template #entity-preview>
+              <span>
+                <div class="flex flex-row items-center py-2.25 px-2.5 bg-gray-50 rounded-lg text-gray-700 mb-4">
+                  <GeneralIcon icon="account" class="nc-view-icon"></GeneralIcon>
+                  <div
+                    class="text-ellipsis overflow-hidden select-none w-full pl-1.75"
+                    :style="{ wordBreak: 'keep-all', whiteSpace: 'nowrap', display: 'inline' }"
+                  >
+                    {{ deleteModalInfo?.email }}
+                  </div>
+                </div>
+              </span>
+            </template>
+          </GeneralDeleteModal>
+
+          <LazyAccountUsersModal :key="userMadalKey" :show="showUserModal" @closed="showUserModal = false" @reload="loadUsers" />
+        </div>
+      </div>
     </div>
   </div>
 </template>

@@ -5,11 +5,11 @@ import type {
   UserType,
   ViewCreateReqType,
 } from 'nocodb-sdk';
-import type { NcRequest } from '~/interface/config';
+import type { NcContext, NcRequest } from '~/interface/config';
 import { AppHooksService } from '~/services/app-hooks/app-hooks.service';
 import { validatePayload } from '~/helpers';
 import { NcError } from '~/helpers/catchError';
-import { CalendarView, Model, View } from '~/models';
+import { CalendarView, Model, User, View } from '~/models';
 import NocoCache from '~/cache/NocoCache';
 import { CacheScope } from '~/utils/globals';
 
@@ -17,35 +17,42 @@ import { CacheScope } from '~/utils/globals';
 export class CalendarsService {
   constructor(private readonly appHooksService: AppHooksService) {}
 
-  async calendarViewGet(param: { calendarViewId: string }) {
-    return await CalendarView.get(param.calendarViewId);
+  async calendarViewGet(context: NcContext, param: { calendarViewId: string }) {
+    return await CalendarView.get(context, param.calendarViewId);
   }
 
-  async calendarViewCreate(param: {
-    tableId: string;
-    calendar: ViewCreateReqType;
-    user: UserType;
-    req: NcRequest;
-  }) {
+  async calendarViewCreate(
+    context: NcContext,
+    param: {
+      tableId: string;
+      calendar: ViewCreateReqType;
+      user: UserType;
+      req: NcRequest;
+      ownedBy?: string;
+    },
+  ) {
     validatePayload(
       'swagger.json#/components/schemas/ViewCreateReq',
       param.calendar,
     );
 
-    const model = await Model.get(param.tableId);
+    const model = await Model.get(context, param.tableId);
 
-    const { id } = await View.insertMetaOnly(
-      {
+    const { id } = await View.insertMetaOnly(context, {
+      view: {
         ...param.calendar,
         fk_model_id: param.tableId,
         type: ViewTypes.CALENDAR,
         base_id: model.base_id,
         source_id: model.source_id,
+        created_by: param.user?.id,
+        owned_by: param.ownedBy || param.user?.id,
       },
       model,
-    );
+      req: param.req,
+    });
 
-    const view = await View.get(id);
+    const view = await View.get(context, id);
 
     await NocoCache.appendToList(
       CacheScope.VIEW,
@@ -53,41 +60,72 @@ export class CalendarsService {
       `${CacheScope.VIEW}:${id}`,
     );
 
-    this.appHooksService.emit(AppEvents.VIEW_CREATE, {
-      view,
-      showAs: 'calendar',
-      user: param.user,
+    let owner = param.req.user;
 
+    if (param.ownedBy) {
+      owner = await User.get(param.ownedBy);
+    }
+
+    this.appHooksService.emit(AppEvents.CALENDAR_CREATE, {
+      view: {
+        ...view,
+        ...param.calendar,
+      },
       req: param.req,
+      context,
+      owner,
     });
 
     return view;
   }
 
-  async calendarViewUpdate(param: {
-    calendarViewId: string;
-    calendar: CalendarUpdateReqType;
-    req: NcRequest;
-  }) {
+  async calendarViewUpdate(
+    context: NcContext,
+    param: {
+      calendarViewId: string;
+      calendar: CalendarUpdateReqType;
+      req: NcRequest;
+    },
+  ) {
     validatePayload(
       'swagger.json#/components/schemas/CalendarUpdateReq',
       param.calendar,
     );
 
-    const view = await View.get(param.calendarViewId);
+    const view = await View.get(context, param.calendarViewId);
 
     if (!view) {
       NcError.viewNotFound(param.calendarViewId);
     }
 
-    const res = await CalendarView.update(param.calendarViewId, param.calendar);
+    const oldCalendarView = await CalendarView.get(
+      context,
+      param.calendarViewId,
+    );
 
-    this.appHooksService.emit(AppEvents.VIEW_UPDATE, {
-      view,
-      showAs: 'calendar',
+    const res = await CalendarView.update(
+      context,
+      param.calendarViewId,
+      param.calendar,
+    );
+
+    let owner = param.req.user;
+
+    if (view.owned_by && view.owned_by !== param.req.user?.id) {
+      owner = await User.get(view.owned_by);
+    }
+
+    this.appHooksService.emit(AppEvents.CALENDAR_UPDATE, {
+      view: {
+        ...view,
+        ...param.calendar,
+      },
+      calendarView: param.calendar,
+      oldCalendarView,
       req: param.req,
+      context,
+      owner,
     });
-
     return res;
   }
 }

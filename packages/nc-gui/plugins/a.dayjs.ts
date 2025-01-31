@@ -9,6 +9,7 @@ import updateLocale from 'dayjs/plugin/updateLocale'
 import isSameOrBefore from 'dayjs/plugin/isSameOrBefore'
 import isSameOrAfter from 'dayjs/plugin/isSameOrAfter'
 import isBetween from 'dayjs/plugin/isBetween'
+import advanced from 'dayjs/plugin/advancedFormat'
 
 export default defineNuxtPlugin(() => {
   extend(utc)
@@ -21,7 +22,23 @@ export default defineNuxtPlugin(() => {
   extend(isSameOrBefore)
   extend(isSameOrAfter)
   extend(isBetween)
+  extend(advanced)
   dayjs.updateLocale('en', {
     weekStart: 1,
+    relativeTime: {
+      future: 'in %s',
+      past: '%s ago',
+      s: '%ds',
+      m: '1m',
+      mm: '%dm',
+      h: '1h',
+      hh: '%dh',
+      d: '1d',
+      dd: '%dd',
+      M: '1mo',
+      MM: '%dmo',
+      y: '1y',
+      yy: '%dy',
+    },
   })
 })

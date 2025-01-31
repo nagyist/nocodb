@@ -20,9 +20,6 @@ test.describe('Share form', () => {
 
   test('Survey', async () => {
     if (enableQuickRun()) test.skip();
-
-    // close 'Team & Auth' tab
-    await dashboard.closeTab({ title: 'Team & Auth' });
     await dashboard.treeView.openTable({ title: 'Country' });
 
     await dashboard.viewSidebar.createFormView({
@@ -85,6 +82,7 @@ test.describe('Share form', () => {
     await surveyForm.validateSuccessMessage({
       message: 'Thank you for submitting the form',
       showAnotherForm: true,
+      isCustomMsg: true,
     });
   });
 });

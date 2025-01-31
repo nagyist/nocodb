@@ -1501,6 +1501,11 @@ abstract class BaseModel {
   async errorDeleteb(err, data, trx?: any) {}
 }
 
+export interface XcAggregation {
+  field: string;
+  type: string;
+}
+
 export interface XcFilter {
   where?: string;
   filter?: string;
@@ -1515,6 +1520,10 @@ export interface XcFilter {
   filterArr?: Filter[];
   sortArr?: Sort[];
   pks?: string;
+  aggregation?: XcAggregation[];
+  column_name?: string;
+  page?: string | number;
+  nestedLimit?: string | number;
 }
 
 export interface XcFilterWithAlias extends XcFilter {
@@ -1526,6 +1535,7 @@ export interface XcFilterWithAlias extends XcFilter {
   o?: string | number;
   s?: string;
   f?: string;
+  p?: string | number;
 }
 
 export default BaseModel;

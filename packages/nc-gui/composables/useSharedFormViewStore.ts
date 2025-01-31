@@ -2,6 +2,7 @@ import dayjs from 'dayjs'
 import type {
   BoolType,
   ColumnType,
+  FilterType,
   FormColumnType,
   FormType,
   LinkToAnotherRecordType,
@@ -46,7 +47,7 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
 
   const { api, isLoading } = useApi()
 
-  const { metas, setMeta } = useMetas()
+  const { metas, setMeta, getMeta } = useMetas()
 
   const baseStore = useBase()
   const { base, sqlUis } = storeToRefs(baseStore)
@@ -63,10 +64,17 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
 
   const preFilledformState = ref<Record<string, any>>({})
 
+  const preFilledAdditionalState = ref<Record<string, any>>({})
+
   const preFilledDefaultValueformState = ref<Record<string, any>>({})
 
-  useProvideSmartsheetLtarHelpers(meta)
+  const allViewFilters = ref<Record<string, FilterType[]>>({})
 
+  const isValidRedirectUrl = computed(
+    () => typeof sharedFormView.value?.redirect_url === 'string' && !!sharedFormView.value?.redirect_url?.trim(),
+  )
+
+  useProvideSmartsheetLtarHelpers(meta)
   const { state: additionalState } = useProvideSmartsheetRowStore(
     ref({
       row: formState,
@@ -75,14 +83,46 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
     }),
   )
 
+  const localColumns = computed<(ColumnType & Record<string, any>)[]>(() => {
+    return (columns.value || [])?.filter((c) => supportedFields(c))
+  })
+
+  const localColumnsMapByFkColumnId = computed(() => {
+    return localColumns.value.reduce((acc, c) => {
+      acc[c.fk_column_id] = c
+
+      return acc
+    }, {} as Record<string, ColumnType & Record<string, any>>)
+  })
+
+  const fieldVisibilityValidator = computed(() => {
+    return new FormFilters({
+      nestedGroupedFilters: allViewFilters.value,
+      formViewColumns: localColumns.value,
+      formViewColumnsMapByFkColumnId: localColumnsMapByFkColumnId.value,
+      formState: { ...(formState.value || {}), ...(additionalState.value || {}) },
+      isSharedForm: true,
+      isMysql: (_sourceId?: string) => {
+        return ['mysql', ClientType.MYSQL].includes(sharedView.value?.client || ClientType.MYSQL)
+      },
+      getMeta,
+    })
+  })
+
   const formColumns = computed(
     () =>
-      columns.value
-        ?.filter((c) => c.show)
-        .filter(
-          (col) => !isSystemColumn(col) && col.uidt !== UITypes.SpecificDBType && (!isVirtualCol(col) || isLinksOrLTAR(col.uidt)),
-        ) || [],
+      columns.value?.filter((col) => {
+        const isVisible = col.show
+
+        return isVisible && supportedFields(col)
+      }) || [],
   )
+
+  function supportedFields(col: ColumnType) {
+    return (
+      !isSystemColumn(col) && col.uidt !== UITypes.SpecificDBType && !isAI(col) && (!isVirtualCol(col) || isLinksOrLTAR(col.uidt))
+    )
+  }
 
   const loadSharedView = async () => {
     passwordError.value = null
@@ -100,6 +140,8 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
       sharedFormView.value = viewMeta.view
       meta.value = viewMeta.model
 
+      loadAllviewFilters(Array.isArray(viewMeta?.filter?.children) ? viewMeta?.filter?.children : [])
+
       const fieldById = (viewMeta.columns || []).reduce(
         (o: Record<string, any>, f: Record<string, any>) => ({
           ...o,
@@ -109,15 +151,15 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
       )
 
       columns.value = (viewMeta.model?.columns || [])
-        .filter((c) => fieldById[c.id])
-        .map((c) => {
+        .filter((c: ColumnType) => fieldById[c.id])
+        .map((c: ColumnType) => {
           if (
             !isSystemColumn(c) &&
             !isVirtualCol(c) &&
             !isAttachment(c) &&
             c.uidt !== UITypes.SpecificDBType &&
             c?.title &&
-            c?.cdf &&
+            isValidValue(c?.cdf) &&
             !/^\w+\(\)|CURRENT_TIMESTAMP$/.test(c.cdf)
           ) {
             const defaultValue = typeof c.cdf === 'string' ? c.cdf.replace(/^'|'$/g, '') : c.cdf
@@ -140,10 +182,13 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
 
           return {
             ...c,
+            order: fieldById[c.id].order || c.order,
+            visible: true,
             meta: { ...parseProp(fieldById[c.id].meta), ...parseProp(c.meta) },
             description: fieldById[c.id].description,
           }
         })
+        .sort((a: ColumnType, b: ColumnType) => (a.order ?? Infinity) - (b.order ?? Infinity))
 
       const _sharedViewMeta = (viewMeta as any).meta
       sharedViewMeta.value = isString(_sharedViewMeta) ? JSON.parse(_sharedViewMeta) : _sharedViewMeta
@@ -169,7 +214,9 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
         basesUser.value.set(viewMeta.base_id, viewMeta.users)
       }
 
-      handlePreFillForm()
+      await handlePreFillForm()
+
+      checkFieldVisibility()
     } catch (e: any) {
       const error = await extractSdkResponseErrorMsgv2(e)
 
@@ -188,19 +235,32 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
     }
   }
 
+  const fieldMappings = computed(() => {
+    const uniqueFieldNames: Set<string> = new Set()
+
+    return formColumns.value.reduce((acc, c) => {
+      acc[c.title!] = getValidFieldName(c.title!, uniqueFieldNames)
+      return acc
+    }, {} as Record<string, string>)
+  })
+
   const validators = computed(() => {
     const rulesObj: Record<string, RuleObject[]> = {}
 
-    if (!formColumns.value) return rulesObj
+    if (!formColumns.value || !Object.keys(fieldMappings.value).length) return rulesObj
 
     for (const column of formColumns.value) {
       let rules: RuleObject[] = [
         {
           validator: (_rule: RuleObject, value: any) => {
             return new Promise((resolve, reject) => {
-              if (isRequired(column)) {
+              if (isRequired(column) && column.show) {
                 if (typeof value === 'string') {
                   value = value.trim()
+                }
+
+                if (column.uidt === UITypes.Rating && (!value || Number(value) < 1)) {
+                  return reject(t('msg.error.fieldRequired'))
                 }
 
                 if (
@@ -215,13 +275,21 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
             })
           },
         },
+        {
+          validator: (_rule: RuleObject) => {
+            return new Promise((resolve) => {
+              checkFieldVisibility()
+              return resolve()
+            })
+          },
+        },
       ]
 
       const additionalRules = extractFieldValidator(parseProp(column.meta).validators ?? [], column)
       rules = [...rules, ...additionalRules]
 
       if (rules.length) {
-        rulesObj[column.title!] = rules
+        rulesObj[fieldMappings.value[column.title!]] = rules
       }
     }
 
@@ -229,36 +297,67 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
   })
 
   const validationFieldState = computed(() => {
-    return { ...formState.value, ...additionalState.value }
+    if (!Object.keys(fieldMappings.value).length) return {}
+
+    const fieldMappingFormState = Object.keys(formState.value).reduce((acc, key) => {
+      acc[fieldMappings.value[key]] = formState.value[key]
+      return acc
+    }, {} as Record<string, any>)
+
+    const fieldMappingAdditionalState = Object.keys(additionalState.value).reduce((acc, key) => {
+      acc[fieldMappings.value[key]] = additionalState.value[key]
+      return acc
+    }, {} as Record<string, any>)
+
+    return { ...fieldMappingFormState, ...fieldMappingAdditionalState }
   })
 
   const { validate, validateInfos, clearValidate } = useForm(validationFieldState, validators)
 
-  const handleAddMissingRequiredFieldDefaultState = () => {
-    for (const col of formColumns.value) {
+  const handleAddMissingRequiredFieldDefaultState = async () => {
+    for (const col of localColumns.value) {
       if (
         col.title &&
+        col.show &&
+        col.visible &&
         isRequired(col) &&
         formState.value[col.title] === undefined &&
         additionalState.value[col.title] === undefined
       ) {
         if (isVirtualCol(col)) {
-          additionalState.value[col.title] = null
+          additionalState.value = {
+            ...(additionalState.value || {}),
+            [col.title]: null,
+          }
         } else {
           formState.value[col.title] = null
         }
+      }
+
+      // handle filter out conditionally hidden field data
+      if (!col.visible && col.title) {
+        delete formState.value[col.title]
+        delete additionalState.value[col.title]
       }
     }
   }
 
   const validateAllFields = async () => {
-    handleAddMissingRequiredFieldDefaultState()
+    await handleAddMissingRequiredFieldDefaultState()
 
     try {
-      await validate([...Object.keys(formState.value), ...Object.keys(additionalState.value)])
+      // filter `undefined` keys which is hidden prefilled fields
+      await validate(
+        [
+          ...Object.keys(formState.value).map((title) => fieldMappings.value[title]),
+          ...Object.keys(additionalState.value).map((title) => fieldMappings.value[title]),
+        ].filter((v) => v !== undefined),
+      )
       return true
     } catch (e: any) {
-      if (e.errorFields.length) {
+      console.error('Error occurred while validating all fields:', e)
+
+      if (e?.errorFields?.length) {
         message.error(t('msg.error.someOfTheRequiredFieldsAreEmpty'))
         return false
       }
@@ -289,16 +388,39 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
         ...attachment,
       })
 
-      await api.public.dataCreate(sharedView.value!.uuid!, filtedData, {
+      const newRecord = await api.public.dataCreate(sharedView.value!.uuid!, filtedData, {
         headers: {
           'xc-password': password.value,
         },
       })
 
-      submitted.value = true
-      progress.value = false
+      const pk = extractPkFromRow(newRecord, meta.value?.columns as ColumnType[])
+
+      if (pk && isValidRedirectUrl.value) {
+        const redirectUrl = sharedFormView.value!.redirect_url!.replace('{record_id}', pk)
+
+        // Create an anchor element to parse the URL
+        const anchor = document.createElement('a')
+        anchor.href = redirectUrl
+
+        // Check if the redirect URL has the same host as the current page
+        const isSameHost = anchor.host === window.location.host
+
+        if (isSameHost) {
+          // Use pushState for internal links
+          window.history.pushState({}, 'Redirect', redirectUrl)
+          // Reload the page
+          window.location.reload()
+        } else {
+          // For external links, use window.location.href
+          window.location.href = redirectUrl
+        }
+      } else {
+        submitted.value = true
+        progress.value = false
+      }
     } catch (e: any) {
-      console.log(e)
+      console.error(e)
       await message.error(await extractSdkResponseErrorMsg(e))
     }
     progress.value = false
@@ -306,53 +428,80 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
 
   const clearForm = async () => {
     formResetHook.trigger()
+    additionalState.value = {
+      ...preFilledAdditionalState.value,
+    }
 
-    additionalState.value = {}
     formState.value = {
       ...preFilledDefaultValueformState.value,
       ...(sharedViewMeta.value.preFillEnabled ? preFilledformState.value : {}),
     }
 
     clearValidate()
+    checkFieldVisibility()
   }
 
-  function handlePreFillForm() {
-    if (Object.keys(route.query || {}).length && sharedViewMeta.value.preFillEnabled) {
-      columns.value = (columns.value || []).map((c) => {
-        const queryParam = route.query[c.title as string] || route.query[encodeURIComponent(c.title as string)]
-        if (
-          !c.title ||
-          !queryParam ||
-          isSystemColumn(c) ||
-          isVirtualCol(c) ||
-          isAttachment(c) ||
-          c.uidt === UITypes.SpecificDBType
-        ) {
-          return c
-        }
+  async function handlePreFillForm() {
+    if (Object.keys(route.query || {}).length) {
+      columns.value = await Promise.all(
+        (columns.value || []).map(async (c) => {
+          const queryParam = route.query[c.title as string]
 
-        const preFillValue = getPreFillValue(c, decodeURIComponent(queryParam as string).trim())
-        if (preFillValue !== undefined) {
-          // Prefill form state
-          formState.value[c.title] = preFillValue
-          // preFilledformState will be used in clear form to fill the prefilled data
-          preFilledformState.value[c.title] = preFillValue
+          if (
+            !c.title ||
+            !queryParam ||
+            isSystemColumn(c) ||
+            (isVirtualCol(c) && !isLinksOrLTAR(c)) ||
+            (!sharedViewMeta.value.preFillEnabled && !isVirtualCol(c) && !isLinksOrLTAR(c)) ||
+            isAttachment(c) ||
+            c.uidt === UITypes.SpecificDBType
+          ) {
+            return c
+          }
+          const decodedQueryParam = Array.isArray(queryParam)
+            ? queryParam.map((qp) => decodeURIComponent(qp as string).trim())
+            : decodeURIComponent(queryParam as string).trim()
 
-          // Update column
-          switch (sharedViewMeta.value.preFilledMode) {
-            case PreFilledMode.Hidden: {
-              c.show = false
-              break
+          const preFillValue = await getPreFillValue(c, decodedQueryParam)
+          if (preFillValue !== undefined) {
+            if (isLinksOrLTAR(c)) {
+              // Prefill Link to another record / Links form state
+              additionalState.value = {
+                ...(additionalState.value || {}),
+                [c.title]: preFillValue,
+              }
+            } else {
+              // Prefill form state
+              formState.value[c.title] = preFillValue
             }
-            case PreFilledMode.Locked: {
-              c.read_only = true
-              break
+
+            if (sharedViewMeta.value.preFillEnabled) {
+              // Update column
+              switch (sharedViewMeta.value.preFilledMode) {
+                case PreFilledMode.Hidden: {
+                  c.show = false
+                  c.meta = { ...parseProp(c.meta), preFilledHiddenField: true }
+                  break
+                }
+                case PreFilledMode.Locked: {
+                  c.read_only = true
+                  break
+                }
+              }
             }
           }
-        }
 
-        return c
-      })
+          return c
+        }),
+      )
+
+      try {
+        // preFilledAdditionalState will be used in clear form to fill the prefilled data
+        preFilledAdditionalState.value = JSON.parse(JSON.stringify(additionalState.value || {}))
+
+        // preFilledformState will be used in clear form to fill the prefilled data
+        preFilledformState.value = JSON.parse(JSON.stringify(formState.value || {}))
+      } catch {}
     }
   }
 
@@ -360,7 +509,7 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
     return (c?.source_id ? sqlUis.value[c?.source_id] : Object.values(sqlUis.value)[0])?.getAbstractType(c)
   }
 
-  function getPreFillValue(c: ColumnType, value: string) {
+  async function getPreFillValue(c: ColumnType, value: string | string[]) {
     let preFillValue: any
     switch (c.uidt) {
       case UITypes.SingleSelect:
@@ -488,6 +637,14 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
       }
       case UITypes.LinkToAnotherRecord:
       case UITypes.Links: {
+        const values = Array.isArray(value) ? value : value.split(',')
+        const rows = await loadLinkedRecords(c, values)
+
+        preFillValue = rows
+        // if bt/oo then extract object from array
+        if (c.colOptions?.type === RelationTypes.BELONGS_TO || c.colOptions?.type === RelationTypes.ONE_TO_ONE) {
+          preFillValue = preFillValue[0]
+        }
         // Todo: create an api which will fetch query params records and then autofill records
         break
       }
@@ -505,10 +662,38 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
     return preFillValue
   }
 
+  async function loadLinkedRecords(column: ColumnType, ids: string[]) {
+    const relatedMeta = await getMeta((column.colOptions as LinkToAnotherRecordType)?.fk_related_model_id)
+    const pkCol = relatedMeta?.columns?.find((col) => col.pk)
+    const pvCol = relatedMeta?.columns?.find((col) => col.pv)
+
+    return (
+      await api.public.dataRelationList(
+        route.params.viewId as string,
+        column.id,
+        {},
+        {
+          headers: {
+            'xc-password': password.value,
+          },
+          query: {
+            limit: Math.max(25, ids.length),
+            where: `(${pkCol.title},in,${ids.join(',')})`,
+            fields: [pkCol.title, pvCol.title],
+          },
+        },
+      )
+    )?.list
+  }
+
   let intvl: NodeJS.Timeout
   /** reset form if show_blank_form is true */
   watch(submitted, (nextVal) => {
     if (nextVal && sharedFormView.value?.show_blank_form) {
+      if (typeof sharedFormView.value?.redirect_url === 'string') {
+        return
+      }
+
       secondsRemain.value = 5
       intvl = setInterval(() => {
         secondsRemain.value = secondsRemain.value - 1
@@ -529,7 +714,6 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
         clearInterval(intvl)
       }
       clearForm()
-      clearValidate()
     }
   })
 
@@ -554,6 +738,20 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
     return false
   }
 
+  function loadAllviewFilters(formViewFilters: FilterType[]) {
+    if (!formViewFilters.length) return
+
+    const formFilter = new FormFilters({ data: formViewFilters })
+
+    const allFilters = formFilter.getNestedGroupedFilters()
+
+    allViewFilters.value = { ...allFilters }
+  }
+
+  async function checkFieldVisibility() {
+    await fieldVisibilityValidator.value.validateVisibility()
+  }
+
   watch(password, (next, prev) => {
     if (next !== prev && passwordError.value) passwordError.value = null
   })
@@ -572,7 +770,11 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
     additionalState,
     async () => {
       try {
-        await validate(Object.keys(additionalState.value))
+        await validate(
+          Object.keys(additionalState.value)
+            .map((title) => fieldMappings.value[title])
+            .filter((v) => v !== undefined),
+        )
       } catch {}
     },
     {
@@ -607,6 +809,10 @@ const [useProvideSharedFormStore, useSharedFormStore] = useInjectionState((share
     additionalState,
     isRequired,
     handleAddMissingRequiredFieldDefaultState,
+    fieldMappings,
+    isValidRedirectUrl,
+    loadAllviewFilters,
+    checkFieldVisibility,
   }
 }, 'shared-form-view-store')
 

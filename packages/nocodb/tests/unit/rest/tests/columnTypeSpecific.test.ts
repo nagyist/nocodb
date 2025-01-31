@@ -62,6 +62,11 @@ function columnTypeSpecificTests() {
       uidt: UITypes.LastModifiedBy,
       system: true,
     },
+    {
+      title: 'nc_order',
+      uidt: UITypes.Order,
+      system: true,
+    },
   ];
 
   describe('Qr Code Column', () => {
@@ -106,9 +111,14 @@ function columnTypeSpecificTests() {
     });
 
     it('gets deleted if the referenced column gets deleted', async () => {
+      const ctx = {
+        workspace_id: sakilaProject.fk_workspace_id,
+        base_id: sakilaProject.id,
+      };
+
       // delete referenced value column
       const columnsBeforeReferencedColumnDeleted =
-        await customerTable.getColumns();
+        await customerTable.getColumns(ctx);
 
       expect(
         columnsBeforeReferencedColumnDeleted.some(
@@ -122,7 +132,7 @@ function columnTypeSpecificTests() {
         .send({});
 
       const columnsAfterReferencedColumnDeleted =
-        await customerTable.getColumns();
+        await customerTable.getColumns(ctx);
       expect(
         columnsAfterReferencedColumnDeleted.some(
           (col) => col['title'] === qrCodeReferenceColumnTitle,
@@ -158,7 +168,12 @@ function columnTypeSpecificTests() {
         ],
       });
 
-      columns = await table.getColumns();
+      const ctx = {
+        workspace_id: base.fk_workspace_id,
+        base_id: base.id,
+      };
+
+      columns = await table.getColumns(ctx);
 
       const rowAttributes: any = [];
       for (let i = 0; i < 100; i++) {
@@ -403,6 +418,7 @@ function columnTypeSpecificTests() {
           id: context.user.id,
           email: context.user.email,
           display_name: context.user.display_name,
+          meta: context.user.meta,
         });
 
         expect(columns.columns[defaultTableColumns.length + 1].title).to.equal(
@@ -490,7 +506,7 @@ function columnTypeSpecificTests() {
         // get all columns
         let columns = await getColumnsByAPI(context, base, table);
         // delete the field
-        await deleteColumn(context, { table, column: columns.columns[6] });
+        await deleteColumn(context, { table, column: columns.columns[7] });
         // create column again
         await createColumn(context, table, {
           title: 'CreatedBy',

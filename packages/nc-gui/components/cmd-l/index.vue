@@ -182,7 +182,7 @@ onMounted(() => {
 <template>
   <div v-if="vOpen" class="cmdk-modal cmdl-modal" :class="{ 'cmdk-modal-active cmdl-modal-active': vOpen }">
     <div ref="modalEl" class="cmdk-modal-content cmdl-modal-content relative h-[25.25rem]">
-      <div class="cmdk-input-wrapper">
+      <div class="cmdk-input-wrapper border-b-1 border-gray-200">
         <GeneralIcon class="h-4 w-4 text-gray-500" icon="search" />
         <input ref="cmdInputEl" v-model="search" class="cmdk-input" placeholder="Search" type="text" />
       </div>
@@ -219,7 +219,7 @@ onMounted(() => {
                 </div>
                 <div class="flex w-1/2 justify-end text-gray-600">
                   <div class="flex gap-2 px-2 py-1 rounded-md items-center">
-                    <component :is="iconMap.projectGray" class="w-3 h-3 text-transparent" />
+                    <component :is="iconMap.project" class="w-3 h-3" />
                     <a-tooltip overlay-class-name="!px-2 !py-1 !rounded-lg">
                       <template #title>
                         {{ cmdOption.baseName }}
@@ -230,7 +230,7 @@ onMounted(() => {
                     </a-tooltip>
                     <span class="text-bold"> / </span>
 
-                    <component :is="iconMap.table" class="w-3 h-3 text-transparent" />
+                    <component :is="iconMap.table" class="w-3 h-3" />
                     <a-tooltip overlay-class-name="!px-2 !py-1 !rounded-lg">
                       <template #title>
                         {{ cmdOption.tableName }}
