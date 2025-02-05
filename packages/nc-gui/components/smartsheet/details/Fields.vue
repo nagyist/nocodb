@@ -1,10 +1,21 @@
 <script setup lang="ts">
 import { diff } from 'deep-object-diff'
 import { message } from 'ant-design-vue'
-import { UITypes, isSystemColumn, isVirtualCol } from 'nocodb-sdk'
+import {
+  ButtonActionsType,
+  UITypes,
+  isAIPromptCol,
+  isLinksOrLTAR,
+  isSystemColumn,
+  isVirtualCol,
+  partialUpdateAllowedTypes,
+  readonlyMetaAllowedTypes,
+} from 'nocodb-sdk'
+import type { ButtonType, ColumnType, FilterType, SelectOptionsType, TableType } from 'nocodb-sdk'
 import Draggable from 'vuedraggable'
 import { onKeyDown, useMagicKeys } from '@vueuse/core'
-import type { ColumnType, SelectOptionsType } from 'nocodb-sdk'
+import { generateUniqueColumnName } from '~/helpers/parsers/parserHelpers'
+import { AiWizardTabsType, type PredictedFieldType } from '#imports'
 
 interface TableExplorerColumn extends ColumnType {
   id?: string
@@ -14,11 +25,41 @@ interface TableExplorerColumn extends ColumnType {
     view_id: string
   }
   view_id?: string
+  userHasChangedTitle?: boolean
+
+  // extras
+  colOptions?: any
+  type?: ButtonActionsType
+  theme?: string
+  color?: string
+  icon?: string
+  label?: string
+  fk_column_id?: string
+  fk_webhook_id?: string
+  fk_qr_value_column_id?: string
+  fk_barcode_value_column_id?: string
+  fk_lookup_column_id?: string
+  fk_relation_column_id?: string
+  fk_rollup_column_id?: string
+  rollup_function?: string
+  formula_raw?: string
+  filters?: FilterType[]
+  childTable?: TableType
+  childColumn?: ColumnType
+  childId?: string
+  custom?: {
+    ref_model_id?: string
+    ref_column_id?: string
+    ref_column_title?: string
+  }
+  is_ai_field?: boolean
+  ai_temp_id?: string
 }
 
 interface op {
   op: 'add' | 'update' | 'delete'
   column: TableExplorerColumn
+  error?: string
 }
 
 interface fieldsVisibilityOps {
@@ -32,6 +73,7 @@ interface moveOp {
   index: number
   order: number
 }
+
 const { t } = useI18n()
 
 const { $api } = useNuxtApp()
@@ -40,9 +82,23 @@ const { getMeta } = useMetas()
 
 const { meta, view } = useSmartsheetStoreOrThrow()
 
+const { isFeatureEnabled } = useBetaFeatureToggle()
+
 const isLocked = inject(IsLockedInj, ref(false))
 
-const { openedViewsTab } = storeToRefs(useViewsStore())
+const isForm = inject(IsFormInj, ref(false))
+
+const workspaceStore = useWorkspace()
+
+const viewsStore = useViewsStore()
+
+const { openedViewsTab } = storeToRefs(viewsStore)
+
+const { aiIntegrationAvailable, aiLoading, aiError } = useNocoAi()
+
+const localMetaColumns = ref<ColumnType[] | undefined>([])
+
+const localPredictions = ref<string[]>([])
 
 const moveOps = ref<moveOp[]>([])
 
@@ -50,17 +106,19 @@ const visibilityOps = ref<fieldsVisibilityOps[]>([])
 
 const fieldsListWrapperDomRef = ref<HTMLElement>()
 
-const { copy } = useClipboard()
-
-const { fields: viewFields, toggleFieldVisibility, loadViewColumns, isViewColumnsLoading } = useViewColumnsOrThrow()
+const {
+  fields: viewFields,
+  toggleFieldVisibility,
+  loadViewColumns,
+  isViewColumnsLoading,
+  showSystemFields,
+} = useViewColumnsOrThrow()
 
 const loading = ref(false)
 
 const columnsHash = ref<string>()
 
 const newFields = ref<TableExplorerColumn[]>([])
-
-const isFieldIdCopied = ref(false)
 
 const compareCols = (a?: TableExplorerColumn, b?: TableExplorerColumn) => {
   if (a?.id && b?.id) {
@@ -95,10 +153,19 @@ const getFieldOrder = (field?: TableExplorerColumn) => {
   return -1
 }
 
+const showOrHideSystemFields = ref(showSystemFields.value)
+
 const fields = computed<TableExplorerColumn[]>({
   get: () => {
-    const x = ((meta.value?.columns as ColumnType[]) ?? [])
-      .filter((field) => !field.fk_column_id && !isSystemColumn(field))
+    const x = ((localMetaColumns.value as ColumnType[]) ?? [])
+      .filter((field) => {
+        const isAllowToShowCol = isForm.value ? !formViewHiddenColTypes.includes(t.name) : true
+        return (
+          !field.fk_column_id &&
+          (showOrHideSystemFields.value ? !!viewFieldsMap.value[field.id] : !isSystemColumn(field)) &&
+          isAllowToShowCol
+        )
+      })
       .concat(newFields.value)
       .map((field) => updateDefaultColumnValues(field))
       .sort((a, b) => {
@@ -107,7 +174,7 @@ const fields = computed<TableExplorerColumn[]>({
     return x
   },
   set: (val) => {
-    meta.value!.columns = meta.value?.columns?.map((col) => {
+    localMetaColumns.value = localMetaColumns.value?.map((col) => {
       const field = val.find((f) => compareCols(f, col))
       if (field) {
         return field
@@ -117,10 +184,51 @@ const fields = computed<TableExplorerColumn[]>({
   },
 })
 
+const isAllFieldsVisible = computed(() => {
+  return fields.value.every((field) => {
+    if (visibilityOps.value.find((op) => op.column.fk_column_id === field.id)?.visible ?? viewFieldsMap.value[field.id!]?.show) {
+      return true
+    }
+    return false
+  })
+})
+
 // Current Selected Field
 const activeField = ref()
 
 const searchQuery = ref<string>('')
+
+const {
+  aiMode,
+  aiModeStep,
+  predicted,
+  activeTabPredictedFields,
+  activeTabSelectedFields,
+  activeTabPredictHistory,
+  calledFunction,
+  prompt,
+  oldPrompt,
+  isPromtAlreadyGenerated,
+  maxSelectionCount,
+  activeAiTab,
+  isPredictFromPromptLoading,
+  isFormulaPredictionMode,
+  fieldPredictionMode,
+  onInit,
+  toggleAiMode: _toggleAiMode,
+  disableAiMode: _disableAiMode,
+  predictMore,
+  predictRefresh,
+  predictFromPrompt,
+  handleRefreshOnError,
+  onToggleTag: _onToggleTag,
+} = usePredictFields(ref(true), fields)
+
+const activeTabNonSelectedFields = computed(() => activeTabPredictedFields.value.filter((f) => !f.selected))
+
+onBeforeMount(() => {
+  onInit()
+})
 
 const calculateOrderForIndex = (index: number, fromAbove = false) => {
   if (!viewFields.value) return -1
@@ -178,7 +286,30 @@ const setFieldMoveHook = (field: TableExplorerColumn, before = false) => {
   }
 }
 
+const { isMetaReadOnly } = useRoles()
+
+const isColumnUpdateAllowed = (column: ColumnType) => {
+  if (
+    isMetaReadOnly.value &&
+    !readonlyMetaAllowedTypes.includes(column?.uidt) &&
+    !partialUpdateAllowedTypes.includes(column?.uidt) &&
+    !isSystemColumn(column)
+  )
+    return false
+  return true
+}
+
 const changeField = (field?: TableExplorerColumn, event?: MouseEvent) => {
+  if (field?.id && field?.uidt && !isColumnUpdateAllowed(field)) {
+    return message.info(t('msg.info.schemaReadOnly'))
+  }
+
+  if (field && field?.pk) {
+    // Editing primary key not supported
+    message.info(t('msg.info.editingPKnotSupported'))
+    return
+  }
+
   if (event) {
     if (event.target instanceof HTMLElement) {
       if (event.target.closest('.no-action')) return
@@ -188,6 +319,7 @@ const changeField = (field?: TableExplorerColumn, event?: MouseEvent) => {
   if (compareCols(field, activeField.value) || (field === undefined && activeField.value === undefined)) return
 
   changingField.value = true
+
   nextTick(() => {
     activeField.value = field
     changingField.value = false
@@ -209,15 +341,15 @@ const addField = (field?: TableExplorerColumn, before = false) => {
 }
 
 const displayColumn = computed(() => {
-  if (!meta.value?.columns) return
-  return meta.value?.columns.find((col) => col.pv)
+  if (!localMetaColumns.value) return
+  return localMetaColumns.value.find((col) => col.pv)
 })
 
 const duplicateField = async (field: TableExplorerColumn) => {
-  if (!meta.value?.columns) return
+  if (!localMetaColumns.value) return
 
   // generate duplicate column name
-  const duplicateColumnName = getUniqueColumnName(`${field.title}_copy`, meta.value?.columns)
+  const duplicateColumnName = getUniqueColumnName(`${field.title} copy`, [...localMetaColumns.value, ...newFields.value])
 
   let fieldPayload = {}
 
@@ -228,6 +360,7 @@ const duplicateField = async (field: TableExplorerColumn) => {
     case UITypes.Lookup:
     case UITypes.Rollup:
     case UITypes.Formula:
+    case UITypes.Button:
       return message.info(t('msg.info.notAvailableAtTheMoment'))
     case UITypes.SingleSelect:
     case UITypes.MultiSelect:
@@ -265,8 +398,21 @@ const duplicateField = async (field: TableExplorerColumn) => {
   duplicateFieldHook.value = fieldPayload as TableExplorerColumn
 }
 
+// Check any filter is changed recursively
+const checkForFilterChange = (filters: (FilterType & { status?: string })[]) => {
+  for (const filter of filters) {
+    if (filter.status) {
+      return true
+    }
+    if (filter.is_group) {
+      if (checkForFilterChange(filter.children || [])) {
+        return true
+      }
+    }
+  }
+}
 // This method is called whenever there is a change in field properties
-const onFieldUpdate = (state: TableExplorerColumn) => {
+const onFieldUpdate = (state: TableExplorerColumn, skipLinkChecks = false) => {
   const col = fields.value.find((col) => compareCols(col, state))
   if (!col) return
 
@@ -285,9 +431,19 @@ const onFieldUpdate = (state: TableExplorerColumn) => {
     }
   }
 
-  const diffs = diff(col, state) as Partial<TableExplorerColumn>
+  const pdiffs: Record<string, any> = diff(col, state)
 
-  if (Object.keys(diffs).length === 0 || (Object.keys(diffs).length === 1 && 'altered' in diffs)) {
+  // remove undefined values
+  const diffs = Object.fromEntries(
+    Object.entries(pdiffs).filter(([_, value]) => value !== undefined),
+  ) as Partial<TableExplorerColumn>
+
+  if (
+    Object.keys(diffs).length === 0 ||
+    // skip custom prop since it's only used for custom LTAR links
+    (Object.keys(diffs).length === 1 && 'custom' in diffs && Object.keys(diffs.custom).length === 0) ||
+    (Object.keys(diffs).length === 1 && 'altered' in diffs)
+  ) {
     ops.value = ops.value.filter((op) => op.op === 'add' || !compareCols(op.column, state))
   } else {
     const field = ops.value.find((op) => compareCols(op.column, state))
@@ -298,10 +454,13 @@ const onFieldUpdate = (state: TableExplorerColumn) => {
       newFields.value = newFields.value.map((op) => {
         if (compareCols(op, state)) {
           ops.value = ops.value.filter((op) => op.op === 'add' && !compareCols(op.column, state))
-          ops.value.push({
-            op: 'add',
-            column: state,
-          })
+          ops.value = [
+            ...ops.value,
+            {
+              op: 'add',
+              column: state,
+            },
+          ]
           return state
         }
         return op
@@ -311,17 +470,44 @@ const onFieldUpdate = (state: TableExplorerColumn) => {
 
     if (field || (field && moveField)) {
       field.column = state
+    } else if (isLinksOrLTAR(state) && !skipLinkChecks) {
+      if (
+        ['title', 'column_name', 'meta'].some((k) => k in diffs) ||
+        ('childViewId' in diffs && diffs.childViewId !== col.colOptions?.fk_target_view_id) ||
+        checkForFilterChange(diffs.filters || [])
+      ) {
+        ops.value = [
+          ...ops.value,
+          {
+            op: 'update',
+            column: state,
+          },
+        ]
+      }
     } else {
-      ops.value.push({
-        op: 'update',
-        column: state,
-      })
+      ops.value = [
+        ...ops.value,
+        {
+          op: 'update',
+          column: state,
+        },
+      ]
+    }
+
+    if (
+      activeField.value &&
+      Object.keys(activeField.value).length &&
+      ((state?.id && activeField.value?.id && state?.id === activeField.value?.id) ||
+        (state?.temp_id && activeField.value?.temp_id && state?.temp_id === activeField.value?.temp_id))
+    ) {
+      activeField.value = state
     }
   }
 }
 
 const onFieldDelete = (state: TableExplorerColumn) => {
   const field = ops.value.find((op) => compareCols(op.column, state))
+
   if (field) {
     if (field.op === 'delete') {
       ops.value = ops.value.filter((op) => op.column.id !== state.id)
@@ -331,15 +517,25 @@ const onFieldDelete = (state: TableExplorerColumn) => {
       }
       ops.value = ops.value.filter((op) => op.column.temp_id !== state.temp_id)
       newFields.value = newFields.value.filter((op) => op.temp_id !== state.temp_id)
+
+      if (state.is_ai_field) {
+        const selectedAiField = predicted.value.find((sf) => sf.ai_temp_id === state.ai_temp_id)
+        if (!selectedAiField) return
+
+        _onToggleTag(selectedAiField)
+      }
     } else {
       field.op = 'delete'
       field.column = state
     }
   } else {
-    ops.value.push({
-      op: 'delete',
-      column: state,
-    })
+    ops.value = [
+      ...ops.value,
+      {
+        op: 'delete',
+        column: state,
+      },
+    ]
   }
 }
 
@@ -351,11 +547,14 @@ const onFieldAdd = (state: TableExplorerColumn) => {
 
   state.temp_id = `temp_${++temporaryAddCount.value}`
   state.view_id = view.value?.id as string
-  ops.value.push({
-    op: 'add',
-    column: state,
-  })
-  newFields.value.push(state)
+  ops.value = [
+    ...ops.value,
+    {
+      op: 'add',
+      column: state,
+    },
+  ]
+  newFields.value = [...newFields.value, state]
 
   if (addFieldMoveHook.value) {
     moveOps.value.push({
@@ -409,21 +608,27 @@ const onMove = (_event: { moved: { newIndex: number; oldIndex: number } }) => {
   }
 
   if (op) {
-    onFieldUpdate({
-      ...op.column,
-      column_order: {
-        order,
-        view_id: view.value?.id as string,
+    onFieldUpdate(
+      {
+        ...op.column,
+        column_order: {
+          order,
+          view_id: view.value?.id as string,
+        },
       },
-    })
+      true,
+    )
   } else {
-    onFieldUpdate({
-      ...field,
-      column_order: {
-        order,
-        view_id: view.value?.id as string,
+    onFieldUpdate(
+      {
+        ...field,
+        column_order: {
+          order,
+          view_id: view.value?.id as string,
+        },
       },
-    })
+      true,
+    )
   }
 }
 
@@ -431,11 +636,14 @@ const isColumnValid = (column: TableExplorerColumn) => {
   const isDeleteOp = ops.value.find((op) => compareCols(column, op.column) && op.op === 'delete')
   const isNew = ops.value.find((op) => compareCols(column, op.column) && op.op === 'add')
   if (isDeleteOp) return true
-  if (!column.title) {
+  if (!column.title && !isNew) {
     return false
   }
   if ((column.uidt === UITypes.Links || column.uidt === UITypes.LinkToAnotherRecord) && isNew) {
-    if (!column.childColumn || !column.childTable || !column.childId) {
+    if (
+      (!column.childColumn || !column.childTable || !column.childId) &&
+      (!column.custom?.ref_model_id || !column.custom?.ref_column_id)
+    ) {
       return false
     }
   }
@@ -454,6 +662,23 @@ const isColumnValid = (column: TableExplorerColumn) => {
       return false
     }
   }
+
+  if (column.uidt === UITypes.Button) {
+    if (isNew) {
+      if (column.type === ButtonActionsType.Url && !column.formula_raw) return false
+      if (column.type === ButtonActionsType.Webhook && !column.fk_webhook_id) return false
+    }
+
+    if (column.type === ButtonActionsType.Ai) {
+      return !(
+        !column.fk_integration_id ||
+        !column.formula_raw?.trim() ||
+        !column.output_column_ids?.length ||
+        !column.output_column_ids?.split(',')?.length
+      )
+    }
+  }
+
   return true
 }
 
@@ -498,6 +723,50 @@ function updateDefaultColumnValues(column: TableExplorerColumn) {
 
   if (column.uidt === UITypes.Formula && column.colOptions?.formula_raw && !column?.formula_raw) {
     column.formula_raw = column.colOptions?.formula_raw
+  }
+
+  if (column.uidt === UITypes.Button) {
+    if (column?.id) {
+      const colOptions = column.colOptions as ButtonType
+      column.type = colOptions?.type
+      column.theme = colOptions?.theme
+      column.label = colOptions?.label
+      column.color = colOptions?.color
+      column.fk_webhook_id = colOptions?.fk_webhook_id
+      column.icon = colOptions?.icon
+      column.formula_raw = column.colOptions?.formula_raw
+
+      if (column.type === ButtonActionsType.Ai) {
+        column.output_column_ids = colOptions?.output_column_ids
+        column.fk_integration_id = colOptions?.fk_integration_id
+      }
+    } else {
+      column.type = column?.type || ButtonActionsType.Url
+
+      if (column.type === ButtonActionsType.Ai) {
+        column.theme = column.theme || 'text'
+        column.label = column.label || 'Generate data'
+        column.color = column.color || 'purple'
+        column.icon = column.icon || 'ncAutoAwesome'
+      } else {
+        column.theme = column.theme || 'solid'
+        column.label = column.label || 'Button'
+        column.color = column.color || 'brand'
+        column.fk_webhook_id = column?.fk_webhook_id || ''
+      }
+
+      column.formula_raw = column.formula_raw || ''
+    }
+  }
+
+  if (column.uidt === UITypes.LongText && isAIPromptCol(column)) {
+    if (column?.id) {
+      const colOptions = column.colOptions as Record<string, any>
+
+      column.prompt_raw = colOptions?.prompt_raw
+    } else {
+      column.prompt_raw = column.prompt_raw || ''
+    }
   }
 
   return column
@@ -547,31 +816,85 @@ const fieldStatus = (field?: TableExplorerColumn) => {
   return id ? fieldStatuses.value[id] : ''
 }
 
+const fieldErrors = computed<Record<string, string>>(() => {
+  const errors: Record<string, string> = {}
+  for (const op of ops.value) {
+    if (op?.error) {
+      const id = op.column.id || op.column.temp_id
+
+      if (id) errors[id] = op.error
+    }
+  }
+  return errors
+})
+
+const fieldError = (field?: TableExplorerColumn) => {
+  const id = field?.id || field?.temp_id
+  return id ? fieldErrors.value[id] : ''
+}
+
 const clearChanges = () => {
   ops.value = []
   moveOps.value = []
   newFields.value = []
   visibilityOps.value = []
+  localPredictions.value = []
+  showOrHideSystemFields.value = showSystemFields.value
   changeField()
+  onInit()
 }
 
 const isColumnsValid = computed(() => fields.value.every((f) => isColumnValid(f)))
+
+const metaToLocal = () => {
+  localMetaColumns.value = meta.value?.columns?.map((c: ColumnType) => {
+    if (c.uidt && c.uidt in columnDefaultMeta) {
+      if (!c.meta) c.meta = {}
+      c.meta = {
+        ...columnDefaultMeta[c.uidt as keyof typeof columnDefaultMeta],
+        ...((c.meta as object) || {}),
+      }
+    }
+    return {
+      ...c,
+    }
+  })
+}
 
 const saveChanges = async () => {
   if (!isColumnsValid.value) {
     message.error(t('msg.error.multiFieldSaveValidation'))
     return
-  } else if (!loading.value && ops.value.length < 1 && moveOps.value.length < 1 && visibilityOps.value.length < 1) {
+  } else if (
+    !loading.value &&
+    ops.value.length < 1 &&
+    moveOps.value.length < 1 &&
+    visibilityOps.value.length < 1 &&
+    showSystemFields.value === showOrHideSystemFields.value
+  ) {
     return
   }
   try {
     if (!meta.value?.id) return
 
     loading.value = true
-
+    const newFieldTitles: string[] = []
     for (const mop of moveOps.value) {
       const op = ops.value.find((op) => compareCols(op.column, mop.column))
       if (op && op.op === 'add') {
+        if (!op.column?.userHasChangedTitle && !op.column.title) {
+          const defaultColumnName = generateUniqueColumnName({
+            formState: op.column,
+            tableExplorerColumns: fields.value || [],
+            metaColumns: meta.value?.columns || [],
+            newFieldTitles,
+          })
+          newFieldTitles.push(defaultColumnName)
+
+          op.column.title = defaultColumnName
+          op.column.column_name = defaultColumnName
+        }
+
         op.column.column_order = {
           order: mop.order,
           view_id: view.value?.id as string,
@@ -584,7 +907,13 @@ const saveChanges = async () => {
           view_id: view.value?.id as string,
         }
       }
+
+      if (op) {
+        op.column.view_id = view.value?.id as string
+      }
     }
+
+    const deletedOrUpdatedColumnIds: Set<string> = new Set()
 
     for (const op of ops.value) {
       if (op.op === 'add') {
@@ -592,8 +921,16 @@ const saveChanges = async () => {
           changeField()
         }
       } else if (op.op === 'delete') {
+        deletedOrUpdatedColumnIds.add(op.column.id as string)
+
         if (activeField.value && compareCols(activeField.value, op.column)) {
           changeField()
+        }
+      } else if (op.op === 'update') {
+        const originalColumn = meta.value?.columns?.find((c) => c.id === op.column.id) as ColumnType
+
+        if (originalColumn?.uidt === UITypes.Attachment && originalColumn?.uidt !== op.column.uidt) {
+          deletedOrUpdatedColumnIds.add(op.column.id as string)
         }
       }
     }
@@ -605,6 +942,10 @@ const saveChanges = async () => {
       })
     }
 
+    ops.value = ops.value.map(({ error: _err, ...rest }) => {
+      return rest
+    })
+
     const res = await $api.dbTableColumn.bulk(meta.value?.id, {
       hash: columnsHash.value,
       ops: ops.value,
@@ -613,10 +954,7 @@ const saveChanges = async () => {
     await loadViewColumns()
 
     if (res) {
-      ops.value =
-        res.failedOps && res.failedOps?.length
-          ? (res.failedOps as (op & { error: unknown })[]).map(({ error: _, ...rest }) => rest)
-          : []
+      ops.value = res.failedOps && res.failedOps?.length ? res.failedOps : []
       newFields.value = newFields.value.filter((col) => {
         if (res.failedOps) {
           const op = res.failedOps.find((fop) => {
@@ -631,9 +969,24 @@ const saveChanges = async () => {
       moveOps.value = []
     }
 
+    for (const op of ops.value) {
+      // remove column id from deletedColumnIds if operation was failed
+      if (deletedOrUpdatedColumnIds.has(op.column.id as string) && (op.op === 'delete' || op.op === 'update')) {
+        deletedOrUpdatedColumnIds.delete(op.column.id as string)
+      }
+    }
+
     await getMeta(meta.value.id, true)
+
+    metaToLocal()
+    onInit()
+
+    // Update views if column is used as cover image
+    viewsStore.updateViewCoverImageColumnId({ metaId: meta.value.id as string, columnIds: deletedOrUpdatedColumnIds })
+
     columnsHash.value = (await $api.dbTableColumn.hash(meta.value?.id)).hash
 
+    showSystemFields.value = showOrHideSystemFields.value
     visibilityOps.value = []
   } catch (e) {
     message.error(t('msg.error.somethingWentWrong'))
@@ -647,14 +1000,26 @@ const toggleVisibility = async (checked: boolean, field: Field) => {
     message.warning(t('msg.warning.multiField.fieldVisibility'))
     return
   }
-  if (visibilityOps.value.find((op) => op.column.fk_column_id === field.fk_column_id)) {
-    visibilityOps.value = visibilityOps.value.filter((op) => op.column.fk_column_id !== field.fk_column_id)
+
+  const visibilityOpIndex = visibilityOps.value.findIndex((op) => op.column.fk_column_id === field.fk_column_id)
+
+  if (visibilityOpIndex !== -1) {
+    if (field.show === checked) {
+      visibilityOps.value = visibilityOps.value.filter((op) => op.column.fk_column_id !== field.fk_column_id)
+    } else {
+      visibilityOps.value[visibilityOpIndex]!.visible = checked
+    }
     return
   }
+
   visibilityOps.value.push({
     visible: checked,
     column: field,
   })
+}
+
+const showOrHideAllFields = (isAllFieldsVisible = false) => {
+  fields.value.forEach((f) => toggleVisibility(!isAllFieldsVisible, viewFieldsMap.value[f.id]))
 }
 
 useEventListener(document, 'keydown', async (e: KeyboardEvent) => {
@@ -678,14 +1043,6 @@ useEventListener(document, 'keydown', async (e: KeyboardEvent) => {
   }
 })
 
-const renderCmdOrCtrlKey = () => {
-  return isMac() ? '⌘' : 'Ctrl'
-}
-
-const renderAltOrOptlKey = () => {
-  return isMac() ? '⌥' : 'ALT'
-}
-
 onKeyDown('ArrowDown', () => {
   const index = fields.value.findIndex((f) => compareCols(f, activeField.value))
   if (index === -1) changeField(fields.value[0])
@@ -700,14 +1057,9 @@ onKeyDown('ArrowUp', () => {
 })
 
 onKeyDown('Delete', () => {
-  if (isLocked.value) return
+  if (isLocked.value || activeField.value?.pv) return
 
-  if (
-    document.activeElement?.tagName === 'INPUT' ||
-    document.activeElement?.tagName === 'TEXTAREA' ||
-    // A rich text editor is a div with the contenteditable attribute set to true.
-    document.activeElement?.getAttribute('contenteditable')
-  ) {
+  if (isActiveInputElementExist()) {
     return
   }
 
@@ -718,14 +1070,9 @@ onKeyDown('Delete', () => {
 })
 
 onKeyDown('Backspace', () => {
-  if (isLocked.value) return
+  if (isLocked.value || activeField.value?.pv) return
 
-  if (
-    document.activeElement?.tagName === 'INPUT' ||
-    document.activeElement?.tagName === 'TEXTAREA' ||
-    // A rich text editor is a div with the contenteditable attribute set to true.
-    document.activeElement?.getAttribute('contenteditable')
-  ) {
+  if (isActiveInputElementExist()) {
     return
   }
 
@@ -744,12 +1091,6 @@ onKeyDown('ArrowRight', () => {
     }
   }
 })
-
-const onClickCopyFieldUrl = async (field: ColumnType) => {
-  await copy(field.id!)
-
-  isFieldIdCopied.value = true
-}
 
 const keys = useMagicKeys()
 
@@ -778,31 +1119,182 @@ watch(
 )
 
 onMounted(async () => {
+  await until(() => !!(meta.value?.id && meta.value?.columns)).toBeTruthy()
+
   if (meta.value && meta.value.id) {
     columnsHash.value = (await $api.dbTableColumn.hash(meta.value.id)).hash
   }
+
+  metaToLocal()
 })
 
-const onFieldOptionUpdate = () => {
-  setTimeout(() => {
-    isFieldIdCopied.value = false
-  }, 200)
+watch(
+  () => activeField.value?.temp_id,
+  (_newValue, oldValue) => {
+    if (!oldValue) return
+
+    const oldField = fields.value.find((field) => field.temp_id === oldValue)
+    if (
+      !oldField ||
+      (oldField &&
+        (oldField.title ||
+          !ops.value.find((op) => op.op === 'add' && op.column.temp_id === oldField.temp_id) ||
+          oldField?.userHasChangedTitle ||
+          !isColumnValid(oldField)))
+    ) {
+      return
+    }
+
+    const newFieldTitles = ops.value
+      .filter((op) => op.op === 'add' && op.column.title)
+      .map((op) => op.column.title)
+      .filter((t) => t) as string[]
+
+    const defaultColumnName = generateUniqueColumnName({
+      formState: oldField,
+      tableExplorerColumns: fields.value || [],
+      metaColumns: localMetaColumns.value || [],
+      newFieldTitles,
+    })
+
+    oldField.title = defaultColumnName
+    oldField.column_name = defaultColumnName
+  },
+)
+
+const onAiFieldAdd = (field: PredictedFieldType) => {
+  if ([UITypes.SingleSelect, UITypes.MultiSelect].includes(field.type)) {
+    if (field.options) {
+      const options: {
+        title: string
+        index: number
+        color?: string
+      }[] = []
+      for (const option of field.options) {
+        // skip if option already exists
+        if (options.find((el) => el.title === option)) continue
+
+        options.push({
+          title: option,
+          index: options.length,
+          color: enumColor.light[options.length % enumColor.light.length],
+        })
+      }
+
+      field.colOptions = {
+        options,
+      }
+    }
+  }
+
+  onFieldAdd(
+    updateDefaultColumnValues({
+      title: field.title,
+      uidt:
+        fieldPredictionMode.value === 'formula'
+          ? UITypes.Formula
+          : fieldPredictionMode.value === 'button'
+          ? UITypes.Button
+          : field.type,
+      column_name: field.title.toLowerCase().replace(/\\W/g, '_'),
+      ...(field.formula ? { formula_raw: field.formula } : {}),
+      ...(field.colOptions ? { colOptions: field.colOptions } : {}),
+      meta: {
+        ...(field.type in columnDefaultMeta ? columnDefaultMeta[field.type as keyof typeof columnDefaultMeta] : {}),
+      },
+      ...(fieldPredictionMode.value === 'button'
+        ? {
+            type: ButtonActionsType.Ai,
+            output_column_ids: field.output_column_ids,
+            formula_raw: field.formula_raw,
+          }
+        : {}),
+      is_ai_field: true,
+      ai_temp_id: field.ai_temp_id,
+    }),
+  )
 }
 
-watch(
-  fields,
-  () => {
-    if (activeField.value) {
-      activeField.value = fields.value.find((field) => field.id === activeField.value.id) || activeField.value
-    }
-  },
-  { deep: true },
-)
+const onToggleTag = (field: PredictedFieldType) => {
+  if (loading.value) return
+
+  const onAdd = _onToggleTag(field)
+  if (onAdd) {
+    onAiFieldAdd(field)
+
+    setTimeout(() => {
+      if (fieldsListWrapperDomRef.value) {
+        fieldsListWrapperDomRef.value.scrollTop = fieldsListWrapperDomRef.value.scrollHeight
+      }
+    }, 100)
+  }
+}
+
+const handleNavigateToIntegrations = () => {
+  workspaceStore.navigateToIntegrations(undefined, undefined, {
+    categories: 'ai',
+  })
+}
+
+const toggleAiMode = (...args: any[]) => {
+  _toggleAiMode(...args)
+
+  changingField.value = true
+
+  nextTick(() => {
+    changingField.value = false
+  })
+}
+
+const disableAiMode = () => {
+  _disableAiMode()
+
+  changingField.value = true
+
+  nextTick(() => {
+    changingField.value = false
+  })
+}
+
+const aiPromptInputRef = ref<HTMLElement>()
+
+watch(activeAiTab, (newValue) => {
+  if (newValue === AiWizardTabsType.PROMPT) {
+    nextTick(() => {
+      aiPromptInputRef.value?.focus()
+    })
+  }
+})
+
+const rightPanelRef = ref()
+
+const oldRightPanelWidth = ref()
+
+const { width: _rightPanelWidth } = useElementBounding(rightPanelRef)
+
+/**
+ * Tracks and computes the stable width of the right panel, accounting for transition effects.
+ *
+ * @remarks
+ * - `_rightPanelWidth` reflects the current width of the right panel reported by `useElementBounding`.
+ * - `oldRightPanelWidth` stores the last valid width to avoid using transitional `0` width values.
+ * - During transitions, `_rightPanelWidth` may initially be `0`, so `oldRightPanelWidth` ensures a consistent and reliable width value.
+ *
+ * @returns The stable width of the right panel.
+ */
+
+const rightPanelWidth = computed(() => {
+  if (_rightPanelWidth.value && _rightPanelWidth.value !== oldRightPanelWidth.value) {
+    oldRightPanelWidth.value = _rightPanelWidth.value
+  }
+
+  return oldRightPanelWidth.value
+})
 </script>
 
 <template>
   <div class="nc-fields-wrapper w-full p-4">
-    <div class="max-w-250 h-full w-full mx-auto">
+    <div class="max-w-250 h-full w-full mx-auto flex flex-col gap-6">
       <div v-if="isViewColumnsLoading" class="flex flex-row justify-between mt-2">
         <a-skeleton-input class="!h-8 !w-68 !rounded !overflow-hidden" active size="small" />
         <div class="flex flex-row gap-x-4">
@@ -812,54 +1304,152 @@ watch(
         </div>
       </div>
       <template v-else>
-        <div class="flex w-full justify-between py-2">
-          <a-input
-            v-model:value="searchQuery"
-            data-testid="nc-field-search-input"
-            class="!h-8 !px-1 !rounded-lg !w-72"
-            :placeholder="$t('placeholder.searchFields')"
-          >
-            <template #prefix>
-              <GeneralIcon icon="search" class="mx-1 h-3.5 w-3.5 text-gray-500 group-hover:text-black" />
-            </template>
-            <template #suffix>
-              <GeneralIcon
-                v-if="searchQuery.length > 0"
-                icon="close"
-                class="mx-1 h-3.5 w-3.5 text-gray-500 group-hover:text-black"
-                data-testid="nc-field-clear-search"
-                @click="searchQuery = ''"
-              />
-            </template>
-          </a-input>
+        <div class="flex w-full justify-between pt-2">
           <div class="flex gap-2">
-            <NcTooltip :disabled="isLocked">
-              <template #title> {{ `${renderAltOrOptlKey()} + C` }} </template>
-              <NcButton
-                data-testid="nc-field-add-new"
-                type="secondary"
-                size="small"
-                class="mr-1"
-                :disabled="loading || isLocked"
-                @click="addField()"
-              >
-                <div class="flex items-center gap-2">
-                  <GeneralIcon icon="plus" class="w-3" />
-                  {{ $t('labels.multiField.newField') }}
-                </div>
+            <a-input
+              v-model:value="searchQuery"
+              data-testid="nc-field-search-input"
+              class="!h-8 !px-1 !rounded-lg !w-72"
+              :placeholder="$t('placeholder.searchFields')"
+            >
+              <template #prefix>
+                <GeneralIcon icon="search" class="mx-1 h-3.5 w-3.5 text-gray-500 group-hover:text-black" />
+              </template>
+              <template #suffix>
+                <GeneralIcon
+                  v-if="searchQuery.length > 0"
+                  icon="close"
+                  class="mx-1 h-3.5 w-3.5 text-gray-500 group-hover:text-black"
+                  data-testid="nc-field-clear-search"
+                  @click="searchQuery = ''"
+                />
+              </template>
+            </a-input>
+            <NcDropdown :trigger="['hover']" placement="bottomRight">
+              <NcButton size="small" type="secondary" icon-only :shadow="false">
+                <template #icon>
+                  <GeneralIcon icon="threeDotVertical" class="text-xs !text-current w-4 h-4" />
+                </template>
               </NcButton>
-            </NcTooltip>
+              <template #overlay>
+                <NcMenu variant="small">
+                  <NcMenuItem class="!children:w-full" @click="showOrHideAllFields(isAllFieldsVisible)">
+                    {{ isAllFieldsVisible ? $t('general.hideAll') : $t('general.showAll') }}
+                    {{ $t('objects.fields').toLowerCase() }}
+                  </NcMenuItem>
+                  <NcMenuItem class="!children:w-full" @click="showOrHideSystemFields = !showOrHideSystemFields">
+                    {{ showOrHideSystemFields ? $t('title.hideSystemFields') : $t('activity.showSystemFields') }}
+                  </NcMenuItem>
+                </NcMenu>
+              </template>
+            </NcDropdown>
+          </div>
+          <div class="flex gap-2">
+            <template v-if="isFeatureEnabled(FEATURE_FLAG.AI_FEATURES)">
+              <div class="nc-fields-add-new-field-btn-wrapper rounded-lg shadow-nc-sm">
+                <NcTooltip :disabled="isLocked">
+                  <template #title> {{ `${renderAltOrOptlKey()} + C` }} </template>
+                  <NcButton
+                    data-testid="nc-field-add-new"
+                    type="secondary"
+                    size="small"
+                    class="nc-field-add-new !rounded-r-none !border-r-transparent"
+                    :disabled="loading || isLocked"
+                    :shadow="false"
+                    @click="addField()"
+                  >
+                    <div class="flex items-center gap-2">
+                      <GeneralIcon icon="plus" class="w-3" />
+                      {{ $t('labels.multiField.newField') }}
+                    </div>
+                  </NcButton>
+                </NcTooltip>
+                <NcTooltip :title="aiMode ? 'Disable AI suggestions' : 'Suggest fields using AI'">
+                  <NcDropdown :trigger="['hover']" placement="bottomRight" overlay-class-name="!border-purple-200">
+                    <NcButton
+                      size="small"
+                      :type="aiMode ? 'primary' : 'secondary'"
+                      theme="ai"
+                      class="nc-field-ai-toggle-btn"
+                      :class="{
+                        '!pointer-events-none !cursor-not-allowed': aiLoading,
+                        'nc-ai-mode': aiMode,
+                      }"
+                      icon-only
+                      :shadow="false"
+                      @click.stop="aiMode ? disableAiMode() : toggleAiMode()"
+                    >
+                      <template #icon>
+                        <GeneralIcon icon="ncAutoAwesome" class="text-xs !text-current w-4 h-4" />
+                      </template>
+                    </NcButton>
+                    <template #overlay>
+                      <NcMenu variant="medium">
+                        <NcMenuItem class="!children:w-full !text-nc-content-purple-dark" @click="toggleAiMode()">
+                          <component :is="getUIDTIcon(UITypes.SingleLineText)" class="flex-none w-3.5 h-3.5" />
+                          {{ $t('labels.autoSuggestFields') }}
+                        </NcMenuItem>
+                        <NcMenuItem
+                          v-show="!isForm"
+                          class="!children:w-full !text-nc-content-purple-dark"
+                          @click="toggleAiMode('formula')"
+                        >
+                          <component :is="getUIDTIcon(UITypes.Formula)" class="flex-none w-3.5 h-3.5" />
+                          {{ $t('labels.autoSuggestFormulas') }}
+                        </NcMenuItem>
+                        <NcMenuItem
+                          v-show="!isForm"
+                          class="!children:w-full !text-nc-content-purple-dark"
+                          @click="toggleAiMode('button')"
+                        >
+                          <component :is="getUIDTIcon(UITypes.Button)" class="flex-none w-3.5 h-3.5" />
+                          Auto suggest actions
+                        </NcMenuItem>
+                      </NcMenu>
+                    </template>
+                  </NcDropdown>
+                </NcTooltip>
+              </div>
+            </template>
+            <template v-else>
+              <div class="nc-fields-add-new-field-btn-wrapper shadow-sm">
+                <NcTooltip :disabled="isLocked">
+                  <template #title> {{ `${renderAltOrOptlKey()} + C` }} </template>
+                  <NcButton
+                    data-testid="nc-field-add-new"
+                    type="secondary"
+                    size="small"
+                    class="nc-field-add-new"
+                    :disabled="loading || isLocked"
+                    :shadow="false"
+                    @click="addField()"
+                  >
+                    <div class="flex items-center gap-2">
+                      <GeneralIcon icon="plus" class="w-3" />
+                      {{ $t('labels.multiField.newField') }}
+                    </div>
+                  </NcButton>
+                </NcTooltip>
+              </div>
+            </template>
             <NcButton
               data-testid="nc-field-reset"
               type="secondary"
               size="small"
-              :disabled="(!loading && ops.length < 1 && moveOps.length < 1 && visibilityOps.length < 1) || isLocked"
+              :disabled="
+                (!loading &&
+                  ops.length < 1 &&
+                  moveOps.length < 1 &&
+                  visibilityOps.length < 1 &&
+                  showOrHideSystemFields === showSystemFields) ||
+                isLocked
+              "
               @click="clearChanges()"
             >
               {{ $t('general.reset') }}
             </NcButton>
             <NcTooltip :disabled="isLocked">
-              <template #title> {{ `${renderCmdOrCtrlKey()} + S` }} </template>
+              <template #title> {{ `${renderCmdOrCtrlKey()} + S` }}</template>
 
               <NcButton
                 data-testid="nc-field-save-changes"
@@ -867,8 +1457,13 @@ watch(
                 size="small"
                 :loading="loading"
                 :disabled="
-                  (isColumnsValid ? !loading && ops.length < 1 && moveOps.length < 1 && visibilityOps.length < 1 : true) ||
-                  isLocked
+                  (isColumnsValid
+                    ? !loading &&
+                      showOrHideSystemFields === showSystemFields &&
+                      ops.length < 1 &&
+                      moveOps.length < 1 &&
+                      visibilityOps.length < 1
+                    : true) || isLocked
                 "
                 @click="saveChanges()"
               >
@@ -877,375 +1472,659 @@ watch(
             </NcTooltip>
           </div>
         </div>
-        <div class="flex flex-row rounded-lg border-1 overflow-clip border-gray-200">
-          <div ref="fieldsListWrapperDomRef" class="nc-scrollbar-md !overflow-auto flex-1 flex-grow-1 nc-fields-height">
-            <Draggable
-              :model-value="fields"
-              :disabled="isLocked"
-              item-key="id"
-              data-testid="nc-field-list-wrapper"
-              @change="onMove($event)"
-            >
-              <template #item="{ element: field }">
-                <div
-                  v-if="field.title.toLowerCase().includes(searchQuery.toLowerCase()) && !field.pv"
-                  class="flex px-2 hover:bg-gray-100 first:rounded-t-lg border-b-1 last:rounded-b-none border-gray-200 pl-5 group"
-                  :class="` ${compareCols(field, activeField) ? 'selected' : ''}`"
-                  :data-testid="`nc-field-item-${fieldState(field)?.title || field.title}`"
-                  @click="changeField(field, $event)"
-                >
-                  <div class="flex items-center flex-1 py-2.5 gap-1 w-2/6">
-                    <component
-                      :is="iconMap.drag"
-                      class="cursor-move !h-3.75 text-gray-600 mr-1"
-                      :class="{
-                        'opacity-0 !cursor-default': isLocked,
-                      }"
-                    />
-                    <NcCheckbox
-                      v-if="field.id && viewFieldsMap[field.id]"
-                      :disabled="isLocked"
-                      :checked="
-                        visibilityOps.find((op) => op.column.fk_column_id === field.id)?.visible ?? viewFieldsMap[field.id].show
-                      "
-                      data-testid="nc-field-visibility-checkbox"
-                      @change="
+        <!-- Ai field wizard  -->
+        <div
+          class="flex flex-row rounded-lg border-1 overflow-clip border-gray-200"
+          :style="{
+            height: `calc(100vh - (var(--topbar-height) * 3.6) - 24px)`,
+          }"
+        >
+          <div
+            class="flex-1 h-full flex flex-col"
+            :style="{
+              width: rightPanelWidth ? `calc(100% - ${rightPanelWidth}px)` : undefined,
+            }"
+          >
+            <div v-if="aiMode" class="pt-3 bg-nc-bg-gray-extralight border-b-1 border-b-nc-border-gray-medium overflow-x-scroll">
+              <!-- Ai field wizard  -->
+              <AiWizardTabs v-model:active-tab="activeAiTab" show-close-btn @close="disableAiMode()">
+                <template #AutoSuggestedContent>
+                  <div class="px-5 pt-4 pb-5">
+                    <div v-if="!aiIntegrationAvailable" class="flex items-center">
+                      <div class="flex-1 flex items-center gap-3">
+                        <GeneralIcon icon="alertTriangleSolid" class="!text-nc-content-orange-medium w-4 h-4" />
+                        <div class="text-sm text-nc-content-gray-subtle flex-1">{{ $t('title.noAiIntegrationAvailable') }}</div>
+                      </div>
+                      <NcButton type="text" size="small" @click.stop="handleNavigateToIntegrations">
+                        <template #icon>
+                          <GeneralIcon icon="plus" class="h-4 w-4" />
+                        </template>
+                        Add Integration
+                      </NcButton>
+                    </div>
+                    <div v-else-if="aiError" class="w-full flex items-center gap-3">
+                      <GeneralIcon icon="ncInfoSolid" class="flex-none !text-nc-content-red-dark w-4 h-4" />
+
+                      <NcTooltip class="truncate flex-1 text-sm text-nc-content-gray-subtle" show-on-truncate-only>
+                        <template #title>
+                          {{ aiError }}
+                        </template>
+                        {{ aiError }}
+                      </NcTooltip>
+
+                      <NcButton size="small" type="text" class="!text-nc-content-brand" @click.stop="handleRefreshOnError">
+                        {{ $t('general.refresh') }}
+                      </NcButton>
+                    </div>
+
+                    <div v-else-if="aiModeStep === 'init'">
+                      <div class="text-nc-content-purple-light text-sm h-7 flex items-center gap-2">
+                        <GeneralLoader size="regular" class="!text-nc-content-purple-dark" />
+
+                        <div class="nc-animate-dots">
+                          Auto suggesting {{ isFormulaPredictionMode ? 'formula' : '' }} fields for {{ meta?.title }}
+                        </div>
+                      </div>
+                    </div>
+                    <div v-else-if="aiModeStep === 'pick'" class="flex gap-3 items-start">
+                      <div class="flex-1 flex gap-2 flex-wrap">
+                        <template v-if="activeTabNonSelectedFields.length">
+                          <template v-for="f of activeTabNonSelectedFields" :key="f.title">
+                            <NcTooltip :disabled="activeTabSelectedFields.length < maxSelectionCount || f.selected">
+                              <template #title>
+                                <div class="w-[150px]">
+                                  You can only select {{ maxSelectionCount }} fields to create at a time.
+                                </div>
+                              </template>
+
+                              <a-tag
+                                class="nc-ai-suggested-tag"
+                                :class="{
+                                  'nc-disabled': loading || (!f.selected && activeTabSelectedFields.length >= maxSelectionCount),
+                                  'nc-selected': f.selected,
+                                }"
+                                :disabled="activeTabSelectedFields.length >= maxSelectionCount"
+                                @click="onToggleTag(f)"
+                              >
+                                <div class="flex flex-row items-center gap-1.5 py-[3px] text-small leading-[18px]">
+                                  <component
+                                    :is="getUIDTIcon(isFormulaPredictionMode ? UITypes.Formula : f.type)"
+                                    v-if="isFormulaPredictionMode || f?.type"
+                                    class="flex-none w-3.5 h-3.5"
+                                    :class="{
+                                      'opacity-60':
+                                        loading || (!f.selected && activeTabSelectedFields.length >= maxSelectionCount),
+                                    }"
+                                  />
+
+                                  <div>{{ f.title }}</div>
+                                </div>
+                              </a-tag>
+                            </NcTooltip>
+                          </template>
+                        </template>
+                        <div v-else-if="activeTabSelectedFields.length" class="text-nc-content-purple-light">
+                          To generate more {{ isFormulaPredictionMode ? 'formula' : '' }} field suggestions, click the + or ⟳ icon
+                          on the right
+                        </div>
+                        <div v-else class="text-nc-content-gray-subtle2">{{ $t('labels.noData') }}</div>
+                      </div>
+                      <div class="flex items-center gap-1">
+                        <NcTooltip
+                          v-if="
+                            activeTabPredictHistory.length < activeTabSelectedFields.length
+                              ? activeTabPredictHistory.length + activeTabSelectedFields.length < 10
+                              : activeTabPredictHistory.length < 10
+                          "
+                          title="Suggest more"
+                          placement="top"
+                        >
+                          <NcButton
+                            size="xs"
+                            class="!px-1"
+                            type="text"
+                            theme="ai"
+                            :loading="aiLoading && calledFunction === 'predictMore'"
+                            :disabled="loading"
+                            icon-only
+                            @click="predictMore"
+                          >
+                            <template #icon>
+                              <GeneralIcon icon="ncPlusAi" class="!text-current" />
+                            </template>
+                          </NcButton>
+                        </NcTooltip>
+                        <NcTooltip title="Re-suggest" placement="top">
+                          <NcButton
+                            size="xs"
+                            class="!px-1"
+                            type="text"
+                            theme="ai"
+                            :disabled="loading"
+                            :loading="aiLoading && calledFunction === 'predictRefresh'"
+                            @click="predictRefresh"
+                          >
+                            <template #loadingIcon>
+                              <!-- eslint-disable vue/no-lone-template -->
+                              <template></template>
+                            </template>
+                            <GeneralIcon
+                              icon="refresh"
+                              class="!text-current"
+                              :class="{
+                                'animate-infinite animate-spin': aiLoading && calledFunction === 'predictRefresh',
+                              }"
+                            />
+                          </NcButton>
+                        </NcTooltip>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <template #PromptContent>
+                  <div class="px-5 pt-4 pb-5 flex flex-col gap-4">
+                    <div v-if="!aiIntegrationAvailable" class="flex items-center">
+                      <div class="flex-1 flex items-center gap-3">
+                        <GeneralIcon icon="alertTriangleSolid" class="!text-nc-content-orange-medium w-4 h-4" />
+                        <div class="text-sm text-nc-content-gray-subtle flex-1">{{ $t('title.noAiIntegrationAvailable') }}</div>
+                      </div>
+                      <NcButton type="text" size="small" @click.stop="handleNavigateToIntegrations">
+                        <template #icon>
+                          <GeneralIcon icon="plus" class="h-4 w-4" />
+                        </template>
+                        Add Integration
+                      </NcButton>
+                    </div>
+                    <template v-else>
+                      <div class="relative">
+                        <a-textarea
+                          ref="aiPromptInputRef"
+                          v-model:value="prompt"
+                          :disabled="loading"
+                          placeholder="Enter your prompt to get field suggestions.."
+                          class="nc-ai-input nc-input-shadow !px-3 !pt-2 !pb-3 !text-sm !min-h-[68px] !rounded-lg"
+                          @keydown.enter.stop
+                        >
+                        </a-textarea>
+
+                        <NcButton
+                          size="xs"
+                          type="primary"
+                          theme="ai"
+                          class="!px-1 !absolute bottom-2 right-2"
+                          :disabled="
+                            !prompt.trim() ||
+                            isPredictFromPromptLoading ||
+                            (!!prompt.trim() && prompt.trim() === oldPrompt.trim()) ||
+                            loading
+                          "
+                          :loading="isPredictFromPromptLoading"
+                          icon-only
+                          @click="predictFromPrompt"
+                        >
+                          <template #loadingIcon>
+                            <GeneralLoader class="!text-purple-700" size="medium" />
+                          </template>
+                          <template #icon>
+                            <GeneralIcon icon="send" class="flex-none h-4 w-4" />
+                          </template>
+                        </NcButton>
+                      </div>
+
+                      <div v-if="aiError" class="w-full flex items-center gap-3">
+                        <GeneralIcon icon="ncInfoSolid" class="flex-none !text-nc-content-red-dark w-4 h-4" />
+
+                        <NcTooltip class="truncate flex-1 text-sm text-nc-content-gray-subtle" show-on-truncate-only>
+                          <template #title>
+                            {{ aiError }}
+                          </template>
+                          {{ aiError }}
+                        </NcTooltip>
+
+                        <NcButton size="small" type="text" class="!text-nc-content-brand" @click.stop="handleRefreshOnError">
+                          {{ $t('general.refresh') }}
+                        </NcButton>
+                      </div>
+
+                      <div v-else-if="isPromtAlreadyGenerated" class="flex flex-col gap-3">
+                        <div class="text-nc-content-purple-dark font-semibold text-xs">Generated Field(s)</div>
+                        <div class="flex gap-2 flex-wrap">
+                          <template v-if="activeTabNonSelectedFields.length">
+                            <template v-for="f of activeTabNonSelectedFields" :key="f.title">
+                              <NcTooltip :disabled="activeTabSelectedFields.length < maxSelectionCount || f.selected">
+                                <template #title>
+                                  <div class="w-[150px]">
+                                    You can only select {{ maxSelectionCount }} fields to create at a time.
+                                  </div>
+                                </template>
+
+                                <a-tag
+                                  class="nc-ai-suggested-tag"
+                                  :class="{
+                                    'nc-disabled':
+                                      loading || (!f.selected && activeTabSelectedFields.length >= maxSelectionCount),
+                                    'nc-selected': f.selected,
+                                  }"
+                                  :disabled="activeTabSelectedFields.length >= maxSelectionCount"
+                                  @click="onToggleTag(f)"
+                                >
+                                  <div class="flex flex-row items-center gap-1.5 py-[3px] text-small leading-[18px]">
+                                    <component
+                                      :is="getUIDTIcon(isFormulaPredictionMode ? UITypes.Formula : f.type)"
+                                      v-if="isFormulaPredictionMode || f?.type"
+                                      class="flex-none w-3.5 h-3.5"
+                                      :class="{
+                                        'opacity-60':
+                                          loading || (!f.selected && activeTabSelectedFields.length >= maxSelectionCount),
+                                      }"
+                                    />
+
+                                    <div>{{ f.title }}</div>
+                                  </div>
+                                </a-tag>
+                              </NcTooltip>
+                            </template>
+                          </template>
+                          <div v-else-if="activeTabSelectedFields.length" class="text-nc-content-purple-light">
+                            No suggestions remaining. To generate more fields, prompt again...
+                          </div>
+                          <div v-else class="text-nc-content-gray-subtle2">{{ $t('labels.noData') }}</div>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </AiWizardTabs>
+            </div>
+            <div ref="fieldsListWrapperDomRef" class="flex-1 flex-grow-1 nc-scrollbar-md !overflow-auto">
+              <Draggable
+                :model-value="fields"
+                :disabled="isLocked"
+                item-key="id"
+                data-testid="nc-field-list-wrapper"
+                @change="onMove($event)"
+              >
+                <template #item="{ element: field }">
+                  <div
+                    v-if="field.title.toLowerCase().includes(searchQuery.toLowerCase()) && !field.pv"
+                    class="flex px-2 border-b-1 border-gray-200 pl-5 group"
+                    :class="{
+                      'selected': compareCols(field, activeField),
+                      'cursor-not-allowed': !isColumnUpdateAllowed(field),
+                      'hover:bg-gray-100': !isSystemColumn(field),
+                    }"
+                    :data-testid="`nc-field-item-${fieldState(field)?.title || field.title}`"
+                    @click="changeField(field, $event)"
+                  >
+                    <div class="flex items-center flex-1 py-2.5 gap-1 w-2/6">
+                      <component
+                        :is="iconMap.drag"
+                        class="cursor-move !h-3.75 text-gray-600 mr-1"
+                        :class="{
+                          'opacity-0 !cursor-default': isLocked,
+                        }"
+                      />
+                      <NcCheckbox
+                        v-if="field.id && viewFieldsMap[field.id]"
+                        :disabled="isLocked"
+                        :checked="
+                          !!(
+                            visibilityOps.find((op) => op.column.fk_column_id === field.id)?.visible ??
+                            viewFieldsMap[field.id].show
+                          )
+                        "
+                        data-testid="nc-field-visibility-checkbox"
+                        @change="
                         (event: any) => {
                           toggleVisibility(event.target.checked, viewFieldsMap[field.id])
                         }
                       "
-                    />
-                    <NcCheckbox v-else :disabled="true" class="opacity-0" :checked="true" />
-                    <SmartsheetHeaderVirtualCellIcon
-                      v-if="field && isVirtualCol(fieldState(field) || field)"
-                      :column-meta="fieldState(field) || field"
-                      :class="{
-                        'text-brand-500': compareCols(field, activeField),
-                      }"
-                    />
-                    <SmartsheetHeaderCellIcon
-                      v-else
-                      :column-meta="fieldState(field) || field"
-                      :class="{
-                        'text-brand-500': compareCols(field, activeField),
-                      }"
-                    />
-                    <NcTooltip
-                      :class="{
-                        'text-brand-500': compareCols(field, activeField),
-                      }"
-                      class="truncate flex-1"
-                      show-on-truncate-only
-                    >
-                      <template #title> {{ fieldState(field)?.title || field.title }} </template>
-                      <span data-testid="nc-field-title">
-                        {{ fieldState(field)?.title || field.title }}
-                      </span>
-                    </NcTooltip>
-                  </div>
-                  <div class="flex items-center justify-end gap-1">
-                    <div class="nc-field-status-wrapper flex items-center">
-                      <NcBadge
-                        v-if="fieldStatus(field) === 'delete'"
-                        color="red"
-                        :border="false"
-                        class="bg-red-50 text-red-700"
-                        data-testid="nc-field-status-deleted-field"
-                      >
-                        {{ $t('labels.multiField.deletedField') }}
-                      </NcBadge>
-                      <NcBadge
-                        v-else-if="fieldStatus(field) === 'add'"
-                        color="orange"
-                        :border="false"
-                        class="bg-green-50 text-green-700"
-                        data-testid="nc-field-status-new-field"
-                      >
-                        {{ $t('labels.multiField.newField') }}
-                      </NcBadge>
-
-                      <NcBadge
-                        v-else-if="fieldStatus(field) === 'update'"
-                        color="orange"
-                        :border="false"
-                        class="bg-orange-50 text-orange-700"
-                        data-testid="nc-field-status-updated-field"
-                      >
-                        {{ $t('labels.multiField.updatedField') }}
-                      </NcBadge>
-                      <NcBadge
-                        v-if="!isColumnValid(field)"
-                        color="yellow"
-                        :border="false"
-                        class="ml-1 bg-yellow-50 text-yellow-700"
-                        data-testid="nc-field-status-incomplete-configuration"
-                      >
-                        {{ $t('labels.multiField.incompleteConfiguration') }}
-                      </NcBadge>
-                    </div>
-                    <NcButton
-                      v-if="fieldStatus(field) === 'delete' || fieldStatus(field) === 'update'"
-                      type="secondary"
-                      size="small"
-                      class="no-action mr-2"
-                      :disabled="loading"
-                      data-testid="nc-field-restore-changes"
-                      @click="recoverField(field)"
-                    >
-                      <div class="flex items-center text-xs gap-1">
-                        <GeneralIcon icon="reload" />
-                        {{ $t('general.restore') }}
-                      </div>
-                    </NcButton>
-                    <NcDropdown
-                      v-else
-                      :trigger="['click']"
-                      overlay-class-name="nc-field-item-action-dropdown nc-dropdown-table-explorer"
-                      @update:visible="onFieldOptionUpdate"
-                      @click.stop
-                    >
-                      <NcButton
-                        size="xsmall"
-                        type="text"
-                        class="!opacity-0 !group-hover:(opacity-100)"
+                      />
+                      <NcCheckbox v-else :disabled="true" class="opacity-0" :checked="true" />
+                      <SmartsheetHeaderVirtualCellIcon
+                        v-if="field && isVirtualCol(fieldState(field) || field)"
+                        :column-meta="fieldState(field) || field"
                         :class="{
-                          '!hover:(text-brand-700 bg-brand-100) !group-hover:(text-brand-500)': compareCols(field, activeField),
-                          '!hover:(text-gray-700 bg-gray-200) !group-hover:(text-gray-500)': !compareCols(field, activeField),
+                          'text-brand-500': compareCols(field, activeField),
                         }"
-                        data-testid="nc-field-item-action-button"
+                      />
+                      <SmartsheetHeaderCellIcon
+                        v-else
+                        :column-meta="fieldState(field) || field"
+                        :class="{
+                          'text-brand-500': compareCols(field, activeField),
+                        }"
+                      />
+                      <NcTooltip
+                        :class="{
+                          'text-brand-500': compareCols(field, activeField),
+                        }"
+                        class="truncate flex-1"
+                        show-on-truncate-only
                       >
-                        <GeneralIcon icon="threeDotVertical" class="no-action text-inherit" />
+                        <template #title> {{ fieldState(field)?.title || field.title }} </template>
+                        <span data-testid="nc-field-title">
+                          {{ fieldState(field)?.title || field.title }}
+                        </span>
+                      </NcTooltip>
+                    </div>
+                    <div class="flex items-center justify-end gap-1">
+                      <div class="nc-field-status-wrapper flex items-center">
+                        <NcBadge
+                          v-if="fieldStatus(field) === 'delete'"
+                          color="red"
+                          :border="false"
+                          class="bg-red-50 text-red-700 text-small leading-[18px]"
+                          data-testid="nc-field-status-deleted-field"
+                        >
+                          {{ $t('labels.multiField.deletedField') }}
+                        </NcBadge>
+                        <NcBadge
+                          v-else-if="isColumnValid(field) && fieldStatus(field) === 'add'"
+                          :color="field?.is_ai_field ? 'purple' : 'green'"
+                          :border="!!field?.is_ai_field"
+                          class="text-small leading-[18px]"
+                          :class="{
+                            '!bg-purple-50 text-purple-700 !border-purple-100': field?.is_ai_field,
+                            'bg-green-50 text-green-700': !field?.is_ai_field,
+                          }"
+                          data-testid="nc-field-status-new-field"
+                        >
+                          <GeneralIcon v-if="field?.is_ai_field" icon="ncAutoAwesome" class="mr-1 h-4 w-4" />
+                          {{ $t('labels.multiField.newField') }}
+                        </NcBadge>
+
+                        <NcBadge
+                          v-else-if="fieldStatus(field) === 'update'"
+                          color="orange"
+                          :border="false"
+                          class="bg-orange-50 text-orange-700 text-small leading-[18px]"
+                          data-testid="nc-field-status-updated-field"
+                        >
+                          {{ $t('labels.multiField.updatedField') }}
+                        </NcBadge>
+                        <NcBadge
+                          v-if="!isColumnValid(field)"
+                          color="yellow"
+                          :border="false"
+                          class="ml-1 bg-yellow-50 text-yellow-700 text-small leading-[18px]"
+                          data-testid="nc-field-status-incomplete-configuration"
+                        >
+                          {{ $t('labels.multiField.incompleteConfiguration') }}
+                        </NcBadge>
+                        <NcTooltip v-if="!!fieldError(field)" class="cursor-pointer">
+                          <template #title>
+                            {{ fieldError(field) }}
+                          </template>
+
+                          <NcBadge
+                            color="red"
+                            :border="false"
+                            class="ml-1 bg-red-50 text-red-700 text-small leading-[18px]"
+                            data-testid="nc-field-status-error-configuration"
+                          >
+                            <GeneralIcon icon="info" class="!text-current" />
+                          </NcBadge>
+                        </NcTooltip>
+                      </div>
+                      <NcButton
+                        v-if="fieldStatus(field) === 'delete' || fieldStatus(field) === 'update'"
+                        type="secondary"
+                        size="small"
+                        class="no-action mr-2"
+                        :disabled="loading"
+                        data-testid="nc-field-restore-changes"
+                        @click="recoverField(field)"
+                      >
+                        <div class="flex items-center text-xs gap-1">
+                          <GeneralIcon icon="reload" />
+                          {{ $t('general.restore') }}
+                        </div>
                       </NcButton>
+                      <NcDropdown
+                        v-else
+                        :trigger="['click']"
+                        overlay-class-name="nc-field-item-action-dropdown nc-dropdown-table-explorer"
+                        @update:visible="onFieldOptionUpdate"
+                        @click.stop
+                      >
+                        <NcButton
+                          size="xsmall"
+                          type="text"
+                          class="!opacity-0 !group-hover:(opacity-100)"
+                          :class="{
+                            '!hover:(text-brand-700 bg-brand-100) !group-hover:(text-brand-500)': compareCols(field, activeField),
+                            '!hover:(text-gray-700 bg-gray-200) !group-hover:(text-gray-500)': !compareCols(field, activeField),
+                          }"
+                          data-testid="nc-field-item-action-button"
+                        >
+                          <GeneralIcon icon="threeDotVertical" class="no-action text-inherit" />
+                        </NcButton>
 
-                      <template #overlay>
-                        <NcMenu style="padding-top: 0.45rem !important">
-                          <template v-if="fieldStatus(field) !== 'add'">
-                            <NcTooltip placement="top">
-                              <template #title>{{ $t('msg.clickToCopyFieldId') }}</template>
-
-                              <div
-                                class="flex flex-row px-3 py-2 w-46 justify-between items-center group hover:bg-gray-100 cursor-pointer"
+                        <template #overlay>
+                          <NcMenu variant="small" class="!mt-1 !min-w-55">
+                            <template v-if="fieldStatus(field) !== 'add'">
+                              <NcMenuItemCopyId
+                                :id="field.id"
                                 data-testid="nc-field-item-action-copy-id"
-                                @click="onClickCopyFieldUrl(field)"
+                                :tooltip="$t('msg.clickToCopyFieldId')"
+                                :label="
+                                  $t('labels.idColon', {
+                                    id: field.id,
+                                  })
+                                "
+                              />
+                              <NcDivider v-if="!isLocked" />
+                            </template>
+
+                            <template v-if="!isLocked">
+                              <NcMenuItem
+                                key="table-explorer-duplicate"
+                                data-testid="nc-field-item-action-duplicate"
+                                :disabled="isSystemColumn(field)"
+                                @click="duplicateField(field)"
                               >
-                                <div class="flex flex-row items-baseline gap-x-1 font-bold text-xs">
-                                  <div class="text-gray-600">{{ $t('labels.idColon') }}</div>
-                                  <div class="flex flex-row text-gray-600 text-xs" data-testid="nc-field-item-id">
-                                    {{ field.id }}
-                                  </div>
+                                <GeneralIcon icon="duplicate" />
+                                <span> {{ $t('general.duplicate') }} {{ $t('objects.field').toLowerCase() }} </span>
+                              </NcMenuItem>
+                              <NcMenuItem
+                                v-if="!field.pv"
+                                key="table-explorer-insert-above"
+                                data-testid="nc-field-item-action-insert-above"
+                                @click="addField(field, true)"
+                              >
+                                <GeneralIcon icon="ncArrowUp" />
+                                <span>{{ $t('general.insertAbove') }}</span>
+                              </NcMenuItem>
+                              <NcMenuItem
+                                key="table-explorer-insert-below"
+                                data-testid="nc-field-item-action-insert-below"
+                                @click="addField(field)"
+                              >
+                                <GeneralIcon icon="ncArrowDown" />
+                                <span>{{ $t('general.insertBelow') }}</span>
+                              </NcMenuItem>
+
+                              <NcDivider />
+
+                              <NcMenuItem
+                                key="table-explorer-delete"
+                                data-testid="nc-field-item-action-delete"
+                                :disabled="isSystemColumn(field)"
+                                @click="onFieldDelete(field)"
+                              >
+                                <div
+                                  class="text-red-500"
+                                  :class="{
+                                    '!text-gray-400': isSystemColumn(field),
+                                  }"
+                                >
+                                  <GeneralIcon icon="delete" class="group-hover:text-accent -ml-0.25 -mt-0.75 mr-0.5" />
+                                  {{ $t('general.delete') }} {{ $t('objects.field').toLowerCase() }}
                                 </div>
-                                <NcButton size="xsmall" type="secondary" class="!group-hover:bg-gray-100">
-                                  <GeneralIcon v-if="isFieldIdCopied" icon="check" />
-                                  <GeneralIcon v-else icon="copy" />
-                                </NcButton>
-                              </div>
-                            </NcTooltip>
-                            <a-menu-divider v-if="!isLocked" class="my-1.5" />
-                          </template>
-
-                          <template v-if="!isLocked">
-                            <NcMenuItem
-                              key="table-explorer-duplicate"
-                              data-testid="nc-field-item-action-duplicate"
-                              @click="duplicateField(field)"
-                            >
-                              <GeneralIcon icon="duplicate" class="text-gray-800" />
-                              <span>{{ $t('general.duplicate') }}</span>
-                            </NcMenuItem>
-                            <NcMenuItem
-                              v-if="!field.pv"
-                              key="table-explorer-insert-above"
-                              data-testid="nc-field-item-action-insert-above"
-                              @click="addField(field, true)"
-                            >
-                              <GeneralIcon icon="ncArrowUp" class="text-gray-800" />
-                              <span>{{ $t('general.insertAbove') }}</span>
-                            </NcMenuItem>
-                            <NcMenuItem
-                              key="table-explorer-insert-below"
-                              data-testid="nc-field-item-action-insert-below"
-                              @click="addField(field)"
-                            >
-                              <GeneralIcon icon="ncArrowDown" class="text-gray-800" />
-                              <span>{{ $t('general.insertBelow') }}</span>
-                            </NcMenuItem>
-
-                            <a-menu-divider class="my-1.5" />
-
-                            <NcMenuItem
-                              key="table-explorer-delete"
-                              class="!hover:bg-red-50"
-                              data-testid="nc-field-item-action-delete"
-                              @click="onFieldDelete(field)"
-                            >
-                              <div class="text-red-500">
-                                <GeneralIcon icon="delete" class="group-hover:text-accent -ml-0.25 -mt-0.75 mr-0.5" />
-                                {{ $t('general.delete') }}
-                              </div>
-                            </NcMenuItem>
-                          </template>
-                        </NcMenu>
-                      </template>
-                    </NcDropdown>
-                    <MdiChevronRight
-                      class="text-brand-500 opacity-0"
-                      :class="{
-                        'opacity-100': compareCols(field, activeField),
-                      }"
-                    />
-                  </div>
-                </div>
-              </template>
-              <template
-                v-if="
-                  displayColumn && displayColumn.title && displayColumn.title.toLowerCase().includes(searchQuery.toLowerCase())
-                "
-                #header
-              >
-                <div
-                  class="flex px-2 bg-white hover:bg-gray-100 border-b-1 border-gray-200 first:rounded-tl-lg last:border-b-1 pl-5 group"
-                  :class="` ${compareCols(displayColumn, activeField) ? 'selected' : ''}`"
-                  :data-testid="`nc-field-item-${fieldState(displayColumn)?.title || displayColumn.title}`"
-                  @click="changeField(displayColumn, $event)"
-                >
-                  <div class="flex items-center flex-1 py-2.5 gap-1 w-2/6">
-                    <component
-                      :is="iconMap.drag"
-                      class="cursor-move !h-3.75 text-gray-200 mr-1"
-                      :class="{
-                        'opacity-0 !cursor-default': isLocked,
-                      }"
-                    />
-                    <NcCheckbox :disabled="true" :checked="true" data-testid="nc-field-visibility-checkbox" />
-                    <SmartsheetHeaderCellIcon
-                      v-if="displayColumn"
-                      :column-meta="fieldState(displayColumn) || displayColumn"
-                      :class="{
-                        'text-brand-500': compareCols(displayColumn, activeField),
-                      }"
-                    />
-                    <NcTooltip
-                      class="truncate flex-1"
-                      :class="{
-                        'text-brand-500': compareCols(displayColumn, activeField),
-                      }"
-                      show-on-truncate-only
-                    >
-                      <template #title> {{ fieldState(displayColumn)?.title || displayColumn.title }} </template>
-                      <span data-testid="nc-field-title">
-                        {{ fieldState(displayColumn)?.title || displayColumn.title }}
-                      </span>
-                    </NcTooltip>
-                  </div>
-                  <div class="flex items-center justify-end gap-1">
-                    <div class="flex items-center">
-                      <NcBadge
-                        v-if="fieldStatus(displayColumn) === 'delete'"
-                        color="red"
-                        :border="false"
-                        class="bg-red-50 text-red-700"
-                        data-testid="nc-field-status-deleted-field"
-                      >
-                        {{ $t('labels.multiField.deletedField') }}
-                      </NcBadge>
-
-                      <NcBadge
-                        v-else-if="fieldStatus(displayColumn) === 'update'"
-                        color="orange"
-                        :border="false"
-                        class="bg-orange-50 text-orange-700"
-                        data-testid="nc-field-status-updated-field"
-                      >
-                        {{ $t('labels.multiField.updatedField') }}
-                      </NcBadge>
-                    </div>
-                    <NcButton
-                      v-if="fieldStatus(displayColumn) === 'delete' || fieldStatus(displayColumn) === 'update'"
-                      type="secondary"
-                      size="small"
-                      class="no-action mr-2"
-                      :disabled="loading"
-                      data-testid="nc-field-restore-changes"
-                      @click="recoverField(displayColumn)"
-                    >
-                      <div class="flex items-center text-xs gap-1">
-                        <GeneralIcon icon="reload" />
-                        {{ $t('general.restore') }}
-                      </div>
-                    </NcButton>
-                    <NcDropdown
-                      v-else
-                      :trigger="['click']"
-                      overlay-class-name="nc-field-item-action-dropdown-display-column nc-dropdown-table-explorer-display-column"
-                      @update:visible="onFieldOptionUpdate"
-                      @click.stop
-                    >
-                      <NcButton
-                        size="xsmall"
-                        type="text"
-                        class="!opacity-0 !group-hover:(opacity-100)"
+                              </NcMenuItem>
+                            </template>
+                          </NcMenu>
+                        </template>
+                      </NcDropdown>
+                      <MdiChevronRight
+                        class="text-brand-500 opacity-0"
                         :class="{
-                          '!hover:(text-brand-700 bg-brand-100) !group-hover:(text-brand-500)': compareCols(
-                            displayColumn,
-                            activeField,
-                          ),
-                          '!hover:(text-gray-700 bg-gray-200) !group-hover:(text-gray-500)': !compareCols(
-                            displayColumn,
-                            activeField,
-                          ),
+                          'opacity-100': compareCols(field, activeField),
                         }"
-                        data-testid="nc-field-item-action-button"
-                      >
-                        <GeneralIcon icon="threeDotVertical" class="no-action text-inherit" />
-                      </NcButton>
-
-                      <template #overlay>
-                        <NcMenu>
-                          <NcTooltip placement="top">
-                            <template #title>{{ $t('msg.clickToCopyFieldId') }}</template>
-
-                            <div
-                              class="flex flex-row px-3 py-2 w-46 justify-between items-center group hover:bg-gray-100 cursor-pointer"
-                              data-testid="nc-field-item-action-copy-id"
-                              @click="onClickCopyFieldUrl(displayColumn)"
-                            >
-                              <div class="flex flex-row items-baseline gap-x-1 font-bold text-xs">
-                                <div class="text-gray-600">{{ $t('labels.idColon') }}</div>
-                                <div class="flex flex-row text-gray-600 text-xs">
-                                  {{ displayColumn.id }}
-                                </div>
-                              </div>
-                              <NcButton size="xsmall" type="secondary" class="!group-hover:bg-gray-100">
-                                <GeneralIcon v-if="isFieldIdCopied" icon="check" />
-                                <GeneralIcon v-else icon="copy" />
-                              </NcButton>
-                            </div>
-                          </NcTooltip>
-                        </NcMenu>
-                      </template>
-                    </NcDropdown>
-                    <MdiChevronRight
-                      class="text-brand-500 opacity-0"
-                      :class="{
-                        'opacity-100': compareCols(displayColumn, activeField),
-                      }"
-                    />
+                      />
+                    </div>
                   </div>
-                </div>
-              </template>
-            </Draggable>
+                </template>
+                <template
+                  v-if="
+                    displayColumn && displayColumn.title && displayColumn.title.toLowerCase().includes(searchQuery.toLowerCase())
+                  "
+                  #header
+                >
+                  <div
+                    class="flex px-2 bg-white hover:bg-gray-100 border-b-1 border-gray-200 first:rounded-tl-lg last:border-b-1 pl-5 group"
+                    :class="` ${compareCols(displayColumn, activeField) ? 'selected' : ''}`"
+                    :data-testid="`nc-field-item-${fieldState(displayColumn)?.title || displayColumn.title}`"
+                    @click="changeField(displayColumn, $event)"
+                  >
+                    <div class="flex items-center flex-1 py-2.5 gap-1 w-2/6">
+                      <component
+                        :is="iconMap.drag"
+                        class="cursor-move !h-3.75 text-gray-200 mr-1"
+                        :class="{
+                          'opacity-0 !cursor-default': isLocked,
+                        }"
+                      />
+                      <NcCheckbox :disabled="true" :checked="true" data-testid="nc-field-visibility-checkbox" />
+                      <SmartsheetHeaderCellIcon
+                        v-if="displayColumn"
+                        :column-meta="fieldState(displayColumn) || displayColumn"
+                        :class="{
+                          'text-brand-500': compareCols(displayColumn, activeField),
+                        }"
+                      />
+                      <NcTooltip
+                        class="truncate flex-1"
+                        :class="{
+                          'text-brand-500': compareCols(displayColumn, activeField),
+                        }"
+                        show-on-truncate-only
+                      >
+                        <template #title> {{ fieldState(displayColumn)?.title || displayColumn.title }} </template>
+                        <span data-testid="nc-field-title">
+                          {{ fieldState(displayColumn)?.title || displayColumn.title }}
+                        </span>
+                      </NcTooltip>
+                    </div>
+                    <div class="flex items-center justify-end gap-1">
+                      <div class="flex items-center">
+                        <NcBadge
+                          v-if="fieldStatus(displayColumn) === 'delete'"
+                          color="red"
+                          :border="false"
+                          class="bg-red-50 text-red-700 text-small leading-[18px]"
+                          data-testid="nc-field-status-deleted-field"
+                        >
+                          {{ $t('labels.multiField.deletedField') }}
+                        </NcBadge>
+
+                        <NcBadge
+                          v-else-if="fieldStatus(displayColumn) === 'update'"
+                          color="orange"
+                          :border="false"
+                          class="bg-orange-50 text-orange-700 text-small leading-[18px]"
+                          data-testid="nc-field-status-updated-field"
+                        >
+                          {{ $t('labels.multiField.updatedField') }}
+                        </NcBadge>
+                      </div>
+                      <NcButton
+                        v-if="fieldStatus(displayColumn) === 'delete' || fieldStatus(displayColumn) === 'update'"
+                        type="secondary"
+                        size="small"
+                        class="no-action mr-2"
+                        :disabled="loading"
+                        data-testid="nc-field-restore-changes"
+                        @click="recoverField(displayColumn)"
+                      >
+                        <div class="flex items-center text-xs gap-1">
+                          <GeneralIcon icon="reload" />
+                          {{ $t('general.restore') }}
+                        </div>
+                      </NcButton>
+                      <NcDropdown
+                        v-else
+                        :trigger="['click']"
+                        overlay-class-name="nc-field-item-action-dropdown-display-column nc-dropdown-table-explorer-display-column"
+                        @update:visible="onFieldOptionUpdate"
+                        @click.stop
+                      >
+                        <NcButton
+                          size="xsmall"
+                          type="text"
+                          class="!opacity-0 !group-hover:(opacity-100)"
+                          :class="{
+                            '!hover:(text-brand-700 bg-brand-100) !group-hover:(text-brand-500)': compareCols(
+                              displayColumn,
+                              activeField,
+                            ),
+                            '!hover:(text-gray-700 bg-gray-200) !group-hover:(text-gray-500)': !compareCols(
+                              displayColumn,
+                              activeField,
+                            ),
+                          }"
+                          data-testid="nc-field-item-action-button"
+                        >
+                          <GeneralIcon icon="threeDotVertical" class="no-action text-inherit" />
+                        </NcButton>
+
+                        <template #overlay>
+                          <NcMenu variant="small" class="!min-w-55">
+                            <NcMenuItemCopyId
+                              :id="displayColumn.id"
+                              data-testid="nc-field-item-action-copy-id"
+                              :tooltip="$t('msg.clickToCopyFieldId')"
+                              :label="
+                                $t('labels.idColon', {
+                                  id: displayColumn.id,
+                                })
+                              "
+                            />
+                          </NcMenu>
+                        </template>
+                      </NcDropdown>
+                      <MdiChevronRight
+                        class="text-brand-500 opacity-0"
+                        :class="{
+                          'opacity-100': compareCols(displayColumn, activeField),
+                        }"
+                      />
+                    </div>
+                  </div>
+                </template>
+              </Draggable>
+            </div>
           </div>
           <Transition name="slide-fade">
-            <div v-if="!changingField" class="border-gray-200 border-l-1 nc-scrollbar-md nc-fields-height !overflow-y-auto">
+            <div
+              v-if="!changingField"
+              ref="rightPanelRef"
+              class="flex-none border-gray-200 border-l-1 nc-scrollbar-md h-full !overflow-y-auto"
+              @keydown.up.stop
+              @keydown.down.stop
+            >
               <SmartsheetColumnEditOrAddProvider
                 v-if="activeField"
-                class="p-4 w-[25rem]"
+                class="p-4 w-[25rem] flex-none"
                 :column="activeField"
                 :preload="fieldState(activeField)"
                 :table-explorer-columns="fields"
+                :is-column-valid="isColumnValid"
                 embed-mode
                 :readonly="isLocked"
                 from-table-explorer
+                :disable-title-focus="!!activeField?.id || !!activeField?.title"
                 @update="onFieldUpdate"
                 @add="onFieldAdd"
               />
@@ -1268,6 +2147,7 @@ watch(
 .nc-dropdown-table-explorer {
   @apply !overflow-hidden;
 }
+
 .nc-dropdown-table-explorer > div > ul.ant-dropdown-menu.nc-menu {
   @apply !pt-0;
 }
@@ -1275,30 +2155,32 @@ watch(
 .nc-dropdown-table-explorer-display-column {
   @apply !overflow-hidden;
 }
-.nc-dropdown-table-explorer-display-column > div > ul.ant-dropdown-menu.nc-menu {
-  @apply !py-1.5;
-}
 </style>
 
 <style lang="scss" scoped>
 :deep(ul.ant-dropdown-menu.nc-menu) {
   @apply !pt-0;
 }
+
 .add {
   background-color: #e6ffed !important;
   border-color: #b7eb8f;
 }
+
 .update {
   background-color: #fffbe6 !important;
   border-color: #ffe58f;
 }
+
 .delete {
   background-color: #fff1f0 !important;
   border-color: #ffa39e;
 }
+
 .selected {
   @apply bg-brand-50;
 }
+
 .slide-fade-enter-active {
   transition: all 0.3s ease-out;
 }
@@ -1315,11 +2197,33 @@ watch(
   transform: translateX(20px);
   opacity: 0;
 }
+
 .slide-fade-leave-to {
   opacity: 0;
 }
 
 .nc-fields-height {
   height: calc(100vh - (var(--topbar-height) * 3.6));
+}
+
+.nc-fields-add-new-field-btn-wrapper {
+  @apply flex items-center mr-1;
+
+  .nc-field-add-new {
+    &.focused {
+      @apply z-10;
+    }
+  }
+
+  .nc-field-ai-toggle-btn {
+    @apply rounded-l-none -ml-[1px];
+
+    &.nc-ai-mode {
+      @apply bg-purple-600 hover:bg-purple-500;
+    }
+    &:not(.nc-ai-mode) {
+      @apply !border-purple-100;
+    }
+  }
 }
 </style>

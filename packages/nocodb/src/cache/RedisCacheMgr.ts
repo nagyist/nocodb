@@ -1,6 +1,7 @@
 import debug from 'debug';
 import Redis from 'ioredis';
 import CacheMgr from './CacheMgr';
+import { CACHE_PREFIX } from '~/utils/globals';
 
 const _log = debug('nc:cache');
 
@@ -12,7 +13,9 @@ export default class RedisCacheMgr extends CacheMgr {
     // avoid flushing db in worker container
     if (
       process.env.NC_WORKER_CONTAINER !== 'true' &&
-      (process.env.NC_FLUSH_CACHE === 'true' || process.env.NC_CLOUD !== 'true')
+      (process.env.NC_FLUSH_CACHE === 'true' ||
+        process.env.NC_CLOUD !== 'true') &&
+      process.env.NC_KEEP_CACHE !== 'true'
     ) {
       // flush the existing db with selected key (Default: 0)
       this.client.flushdb();
@@ -20,7 +23,7 @@ export default class RedisCacheMgr extends CacheMgr {
 
     // TODO(cache): fetch orgs once it's implemented
     const orgs = 'noco';
-    this.prefix = `nc:${orgs}`;
+    this.prefix = `${CACHE_PREFIX}:${orgs}`;
     this.context = 'RedisCacheMgr';
   }
 }

@@ -21,7 +21,11 @@ const globalSearchWrapperRef = ref<HTMLInputElement>()
 const { isMobileMode } = useGlobal()
 
 const columns = computed(
-  () => (meta.value as TableType)?.columns?.filter((column) => !isSystemColumn(column) && column?.uidt !== UITypes.Links) ?? [],
+  () =>
+    (meta.value as TableType)?.columns?.filter(
+      (column) =>
+        !isSystemColumn(column) && ![UITypes.Links, UITypes.Rollup, UITypes.DateTime, UITypes.Date].includes(column?.uidt),
+    ) ?? [],
 )
 
 watch(
@@ -81,13 +85,19 @@ onClickOutside(globalSearchWrapperRef, (e) => {
 
   showSearchBox.value = false
 })
+
+onMounted(() => {
+  if (search.value.query && !showSearchBox.value) {
+    showSearchBox.value = true
+  }
+})
 </script>
 
 <template>
   <div ref="globalSearchWrapperRef" class="nc-global-search-wrapper">
     <a-button
       v-if="!search.query && !showSearchBox"
-      class="nc-toolbar-btn"
+      class="nc-toolbar-btn !rounded-lg !h-7 !px-1.5"
       data-testid="nc-global-search-show-input"
       @click="handleShowSearchInput"
     >
@@ -110,7 +120,7 @@ onClickOutside(globalSearchWrapperRef, (e) => {
         >
           <GeneralIcon icon="search" class="ml-1 mr-2 h-3.5 w-3.5 text-gray-500 group-hover:text-black" />
           <div v-if="!isMobileMode" class="w-16 text-xs font-medium text-gray-400 truncate">
-            {{ displayColumnLabel }}
+            {{ displayColumnLabel ?? '' }}
           </div>
           <div class="xs:(text-gray-600) group-hover:text-gray-700 sm:(text-gray-400)">
             <component :is="iconMap.arrowDown" class="text-sm text-inherit" />
@@ -122,13 +132,14 @@ onClickOutside(globalSearchWrapperRef, (e) => {
             :selected-option-id="search.field"
             show-selected-option
             :options="columns"
+            :search-input-placeholder="$t('placeholder.searchFields')"
             toolbar-menu="globalSearch"
             @selected="onSelectOption"
           />
         </template>
       </NcDropdown>
 
-      <form class="p-0">
+      <form class="p-0" @submit.prevent>
         <a-input
           v-if="search.query || showSearchBox"
           ref="globalSearchRef"
@@ -136,7 +147,7 @@ onClickOutside(globalSearchWrapperRef, (e) => {
           name="globalSearchQuery"
           size="small"
           class="text-xs w-40 h-full"
-          :placeholder="`${$t('general.searchIn')} ${displayColumnLabel}`"
+          :placeholder="`${$t('general.searchIn')} ${displayColumnLabel ?? ''}`"
           :bordered="false"
           data-testid="search-data-input"
           @press-enter="onPressEnter"

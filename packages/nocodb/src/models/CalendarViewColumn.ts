@@ -1,4 +1,5 @@
 import type { BoolType, MetaType } from 'nocodb-sdk';
+import type { NcContext } from '~/interface/config';
 import View from '~/models/View';
 import Noco from '~/Noco';
 import NocoCache from '~/cache/NocoCache';
@@ -8,9 +9,10 @@ import { CacheGetType, CacheScope, MetaTable } from '~/utils/globals';
 
 export default class CalendarViewColumn {
   id?: string;
+  fk_workspace_id?: string;
+  base_id?: string;
   fk_view_id?: string;
   fk_column_id?: string;
-  base_id?: string;
   source_id?: string;
   show?: BoolType;
   underline?: BoolType;
@@ -23,7 +25,11 @@ export default class CalendarViewColumn {
     Object.assign(this, data);
   }
 
-  public static async get(calendarViewColumnId: string, ncMeta = Noco.ncMeta) {
+  public static async get(
+    context: NcContext,
+    calendarViewColumnId: string,
+    ncMeta = Noco.ncMeta,
+  ) {
     let viewColumn =
       calendarViewColumnId &&
       (await NocoCache.get(
@@ -32,26 +38,29 @@ export default class CalendarViewColumn {
       ));
     if (!viewColumn) {
       viewColumn = await ncMeta.metaGet2(
-        null,
-        null,
+        context.workspace_id,
+        context.base_id,
         MetaTable.CALENDAR_VIEW_COLUMNS,
         calendarViewColumnId,
       );
-      viewColumn.meta =
-        viewColumn.meta && typeof viewColumn.meta === 'string'
-          ? JSON.parse(viewColumn.meta)
-          : viewColumn.meta;
+      if (viewColumn) {
+        viewColumn.meta =
+          viewColumn.meta && typeof viewColumn.meta === 'string'
+            ? JSON.parse(viewColumn.meta)
+            : viewColumn.meta;
 
-      await NocoCache.set(
-        `${CacheScope.CALENDAR_VIEW_COLUMN}:${calendarViewColumnId}`,
-        viewColumn,
-      );
+        await NocoCache.set(
+          `${CacheScope.CALENDAR_VIEW_COLUMN}:${calendarViewColumnId}`,
+          viewColumn,
+        );
+      }
     }
 
     return viewColumn && new CalendarViewColumn(viewColumn);
   }
 
   static async insert(
+    context: NcContext,
     column: Partial<CalendarViewColumn>,
     ncMeta = Noco.ncMeta,
   ) {
@@ -73,25 +82,29 @@ export default class CalendarViewColumn {
       },
     );
 
-    if (!(insertObj.base_id && insertObj.source_id)) {
-      const viewRef = await View.get(insertObj.fk_view_id, ncMeta);
-      insertObj.base_id = viewRef.base_id;
+    if (!insertObj.source_id) {
+      const viewRef = await View.get(context, insertObj.fk_view_id, ncMeta);
       insertObj.source_id = viewRef.source_id;
     }
 
     const { id } = await ncMeta.metaInsert2(
-      null,
-      null,
+      context.workspace_id,
+      context.base_id,
       MetaTable.CALENDAR_VIEW_COLUMNS,
       insertObj,
     );
 
     {
-      const view = await View.get(column.fk_view_id, ncMeta);
-      await View.clearSingleQueryCache(view.fk_model_id, [view], ncMeta);
+      const view = await View.get(context, column.fk_view_id, ncMeta);
+      await View.clearSingleQueryCache(
+        context,
+        view.fk_model_id,
+        [view],
+        ncMeta,
+      );
     }
 
-    return this.get(id, ncMeta).then(async (viewColumn) => {
+    return this.get(context, id, ncMeta).then(async (viewColumn) => {
       await NocoCache.appendToList(
         CacheScope.CALENDAR_VIEW_COLUMN,
         [column.fk_view_id],
@@ -102,6 +115,7 @@ export default class CalendarViewColumn {
   }
 
   public static async list(
+    context: NcContext,
     viewId: string,
     ncMeta = Noco.ncMeta,
   ): Promise<CalendarViewColumn[]> {
@@ -113,8 +127,8 @@ export default class CalendarViewColumn {
     const { isNoneList } = cachedList;
     if (!isNoneList && !viewColumns.length) {
       viewColumns = await ncMeta.metaList2(
-        null,
-        null,
+        context.workspace_id,
+        context.base_id,
         MetaTable.CALENDAR_VIEW_COLUMNS,
         {
           condition: {
@@ -145,6 +159,7 @@ export default class CalendarViewColumn {
   }
 
   static async update(
+    context: NcContext,
     columnId: string,
     body: Partial<CalendarViewColumn>,
     ncMeta = Noco.ncMeta,
@@ -159,8 +174,8 @@ export default class CalendarViewColumn {
 
     // update meta
     const res = await ncMeta.metaUpdate(
-      null,
-      null,
+      context.workspace_id,
+      context.base_id,
       MetaTable.CALENDAR_VIEW_COLUMNS,
       updateObj,
       columnId,
@@ -173,9 +188,9 @@ export default class CalendarViewColumn {
 
     // on view column update, delete any optimised single query cache
     {
-      const viewCol = await this.get(columnId, ncMeta);
-      const view = await View.get(viewCol.fk_view_id, ncMeta);
-      await View.clearSingleQueryCache(view.fk_model_id, [view]);
+      const viewCol = await this.get(context, columnId, ncMeta);
+      const view = await View.get(context, viewCol.fk_view_id, ncMeta);
+      await View.clearSingleQueryCache(context, view.fk_model_id, [view]);
     }
 
     return res;

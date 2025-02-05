@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import type { VNodeRef } from '@vue/runtime-core'
+import type { InputPassword } from 'ant-design-vue'
+import { setI18nLanguage } from '~/plugins/a.i18n'
+
 definePageMeta({
   public: true,
   pageType: 'shared-view',
@@ -7,8 +11,6 @@ definePageMeta({
 useSidebar('nc-left-sidebar', { hasSidebar: false })
 
 const route = useRoute()
-
-const { t } = useI18n()
 
 const { loadSharedView, sharedView, sharedViewMeta, meta, notFound, password, passwordDlg, passwordError } =
   useProvideSharedFormStore(route.params.viewId as string)
@@ -24,9 +26,10 @@ if (!notFound.value) {
   useProvideSmartsheetStore(sharedView, meta, true)
 
   applyLanguageDirection(sharedViewMeta.value.rtl ? 'rtl' : 'ltr')
-} else {
-  navigateTo('/error/404')
-  throw createError({ statusCode: 404, statusMessage: t('msg.pageNotFound') })
+
+  if (sharedViewMeta.value.language) {
+    setI18nLanguage(sharedViewMeta.value.language)
+  }
 }
 
 const form = reactive({
@@ -39,12 +42,18 @@ watch(
     password.value = form.password
   },
 )
+
+const focus: VNodeRef = (el: typeof InputPassword) => {
+  return el && el?.focus?.()
+}
 </script>
 
 <template>
   <div>
     <NuxtLayout>
-      <NuxtPage v-if="!passwordDlg" />
+      <NuxtPage v-if="!passwordDlg && !notFound" />
+
+      <GeneralPageDoesNotExist v-if="notFound" />
 
       <a-modal
         v-model:visible="passwordDlg"
@@ -55,25 +64,53 @@ watch(
         :footer="null"
         :mask-closable="false"
         wrap-class-name="nc-modal-shared-form-password-dlg"
+        :mask-style="{
+          backgroundColor: 'rgba(255, 255, 255, 0.64)',
+          backdropFilter: 'blur(8px)',
+        }"
         @close="passwordDlg = false"
       >
-        <div class="w-full flex flex-col gap-4">
-          <h2 class="text-xl font-semibold">{{ $t('msg.thisSharedViewIsProtected') }}</h2>
+        <div class="flex flex-col gap-5">
+          <div class="flex flex-row items-center gap-x-2 text-base font-weight-700 text-gray-800">
+            <GeneralIcon icon="ncKey" class="!text-base w-5 h-5" />
+            {{ $t('msg.thisSharedViewIsProtected') }}
+          </div>
 
-          <a-form layout="vertical" no-style :model="form" @finish="loadSharedView">
-            <a-form-item name="password" :rules="[{ required: true, message: $t('msg.error.signUpRules.passwdRequired') }]">
-              <a-input-password v-model:value="form.password" size="large" :placeholder="$t('msg.enterPassword')" />
+          <a-form :model="form" @finish="loadSharedView">
+            <a-form-item
+              name="password"
+              :rules="[{ required: true, message: $t('msg.error.signUpRules.passwdRequired') }]"
+              class="!mb-0"
+            >
+              <a-input-password
+                :ref="focus"
+                v-model:value="form.password"
+                class="!rounded-lg !text-small"
+                hide-details
+                :placeholder="$t('msg.enterPassword')"
+              />
+              <Transition name="layout">
+                <div v-if="passwordError" class="mb-2 text-sm text-red-500">{{ passwordError }}</div>
+              </Transition>
             </a-form-item>
-
-            <Transition name="layout">
-              <div v-if="passwordError" class="mb-2 text-sm text-red-500">{{ passwordError }}</div>
-            </Transition>
-
-            <!-- Unlock -->
-            <button type="submit" class="mt-4 scaling-btn bg-opacity-100">{{ $t('general.unlock') }}</button>
           </a-form>
+          <div class="flex flex-row justify-end gap-x-2">
+            <NcButton
+              :disabled="!form.password"
+              type="primary"
+              size="small"
+              html-type="submit"
+              class="!px-2"
+              data-testid="nc-shared-view-password-submit-btn"
+              @click="loadSharedView"
+              >{{ $t('objects.view') }}
+              <template #loading> {{ $t('msg.verifyingPassword') }}</template>
+            </NcButton>
+          </div>
         </div>
       </a-modal>
+
+      <img v-if="passwordDlg" alt="view image" src="~/assets/img/views/form.png" class="fixed inset-0 w-full h-full" />
     </NuxtLayout>
   </div>
 </template>
@@ -91,19 +128,6 @@ watch(
 
     .nc-attachment-cell-dropzone {
       @apply rounded bg-gray-400/75;
-    }
-  }
-}
-
-.nc-modal-shared-form-password-dlg {
-  .ant-input-affix-wrapper,
-  .ant-input {
-    @apply !appearance-none my-1 border-1 border-solid border-primary border-opacity-50 rounded;
-  }
-
-  .password {
-    input {
-      @apply !border-none !m-0;
     }
   }
 }

@@ -21,6 +21,8 @@ provide(ActiveViewInj, sharedView)
 provide(IsPublicInj, ref(true))
 provide(IsLockedInj, isLocked)
 
+provide(ReloadAggregateHookInj, createEventHook())
+
 useProvideViewColumns(sharedView, meta, () => reloadEventHook?.trigger(), true)
 useProvideViewGroupBy(sharedView, meta, xWhere, true)
 
@@ -45,7 +47,7 @@ watch(
 </script>
 
 <template>
-  <div class="nc-container flex flex-col h-full mt-1.5 px-12">
+  <div class="nc-container flex flex-col h-full">
     <LazySmartsheetToolbar />
     <LazySmartsheetGrid />
   </div>

@@ -75,7 +75,6 @@ test.describe('Toolbar operations (GRID)', () => {
 
     // Update Sort and Verify
     await toolbar.sort.update({ index: 1, title: 'Title', ascending: true, locallySaved: false });
-    await dashboard.grid.groupPage.openGroup({ indexMap: [0] });
     await dashboard.grid.groupPage.validateFirstRow({
       indexMap: [0],
       rowIndex: 0,
@@ -121,7 +120,6 @@ test.describe('Toolbar operations (GRID)', () => {
 
     // Remove Sort and Verify
     await toolbar.sort.reset();
-    await dashboard.grid.groupPage.openGroup({ indexMap: [0] });
     await dashboard.grid.groupPage.validateFirstRow({
       indexMap: [0],
       rowIndex: 0,
@@ -162,6 +160,7 @@ test.describe('Toolbar operations (GRID)', () => {
 
     // GroupBy Category Descending Order
     await toolbar.groupBy.add({ title: 'Length', ascending: false, locallySaved: false });
+    await toolbar.rootPage.waitForTimeout(500);
     await toolbar.groupBy.add({ title: 'RentalDuration', ascending: false, locallySaved: false });
 
     // Hide Field and Verify
@@ -255,7 +254,6 @@ test.describe('Toolbar operations (GRID)', () => {
 
     // Remove Sort and Verify
     await toolbar.sort.reset();
-    await dashboard.grid.groupPage.openGroup({ indexMap: [1, 0] });
     await dashboard.grid.groupPage.validateFirstRow({
       indexMap: [1, 0],
       rowIndex: 0,
@@ -288,8 +286,6 @@ test.describe('Toolbar operations (GRID)', () => {
       title: 'Description',
       isVisible: true,
     });
-
-    await dashboard.closeTab({ title: 'Film' });
   });
 
   test('Create Three GroupBy and Verify With Sort, Filter, Hide', async () => {
@@ -402,6 +398,7 @@ test.describe('Toolbar operations (GRID)', () => {
 
     // Remove Sort and Verify
     await toolbar.sort.reset();
+    await toolbar.rootPage.reload();
     await dashboard.grid.groupPage.openGroup({ indexMap: [5, 0, 0] });
     await dashboard.grid.groupPage.validateFirstRow({
       indexMap: [5, 0, 0],
@@ -472,6 +469,7 @@ test.describe('Toolbar operations (GRID)', () => {
     });
 
     await toolbar.groupBy.update({ index: 1, title: 'Length', ascending: false });
+    await dashboard.grid.groupPage.openGroup({ indexMap: [0] });
     await dashboard.grid.groupPage.openGroup({ indexMap: [0, 5] });
 
     await dashboard.grid.groupPage.validateFirstRow({
@@ -544,11 +542,13 @@ test.describe('Toolbar operations (GRID)', () => {
 
     await toolbar.groupBy.remove({ index: 1 });
 
+    await dashboard.grid.groupPage.openGroup({ indexMap: [1] });
+
     await dashboard.grid.groupPage.validateFirstRow({
-      indexMap: [0],
+      indexMap: [1],
       rowIndex: 0,
       columnHeader: 'Title',
-      value: 'CHICAGO NORTH',
+      value: 'CONSPIRACY SPIRIT',
     });
 
     await toolbar.groupBy.remove({ index: 0 });
@@ -561,9 +561,6 @@ test.describe('Toolbar operations (GRID)', () => {
   });
 
   test('Hide, Sort, Filter', async () => {
-    // close 'Team & Auth' tab
-    await dashboard.closeTab({ title: 'Team & Auth' });
-
     await dashboard.treeView.openTable({ title: 'Country' });
 
     await dashboard.grid.column.verify({
@@ -609,8 +606,6 @@ test.describe('Toolbar operations (GRID)', () => {
     // Reset filter
     await toolbar.filter.reset();
     await validateFirstRow('Afghanistan');
-
-    await dashboard.closeTab({ title: 'Country' });
   });
 
   test('row height', async () => {
@@ -622,8 +617,6 @@ test.describe('Toolbar operations (GRID)', () => {
       { title: 'Extra', height: '120px' },
     ];
 
-    // close 'Team & Auth' tab
-    await dashboard.closeTab({ title: 'Team & Auth' });
     await dashboard.treeView.openTable({ title: 'Country' });
 
     // set row height & verify

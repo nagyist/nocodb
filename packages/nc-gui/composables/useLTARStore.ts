@@ -9,7 +9,7 @@ import { RelationTypes, UITypes, dateFormats, parseStringDateTime, timeFormats }
 import type { ComputedRef, Ref } from 'vue'
 
 interface DataApiResponse {
-  list: Record<string, any>
+  list: Record<string, any>[]
   pageInfo: PaginatedType
 }
 
@@ -29,6 +29,7 @@ const [useProvideLTARStore, useLTARStore] = useInjectionState(
     const { $api, $e } = useNuxtApp()
 
     const activeView = inject(ActiveViewInj, ref())
+    const isForm = inject(IsFormInj, ref(false))
 
     const { addUndo, clone, defineViewScope } = useUndoRedo()
 
@@ -87,18 +88,10 @@ const [useProvideLTARStore, useLTARStore] = useInjectionState(
       return metas.value?.[colOptions.value?.fk_related_model_id as string]
     })
 
-    const rowId = computed(() =>
-      meta.value.columns
-        .filter((c: Required<ColumnType>) => c.pk)
-        .map((c: Required<ColumnType>) => row?.value?.row?.[c.title])
-        .join('___'),
-    )
+    const rowId = computed(() => extractPkFromRow(row.value.row, meta.value.columns))
 
     const getRelatedTableRowId = (row: Record<string, any>) => {
-      return relatedTableMeta.value?.columns
-        ?.filter((c) => c.pk)
-        .map((c) => row?.[c.title as string] ?? row?.[c.id as string])
-        .join('___')
+      return extractPkFromRow(row, relatedTableMeta.value?.columns)
     }
 
     // actions
@@ -165,7 +158,7 @@ const [useProvideLTARStore, useLTARStore] = useInjectionState(
       return row.value.row[displayValueProp.value]
     })
 
-    const loadChildrenExcludedList = async (activeState?: any, resetOffset: boolean = false) => {
+    const loadChildrenExcludedList = async (activeState?: any, resetOffset = false) => {
       if (activeState) newRowState.state = activeState
       try {
         let offset =
@@ -182,6 +175,13 @@ const [useProvideLTARStore, useLTARStore] = useInjectionState(
 
           const route = router.currentRoute
 
+          let row
+          // if shared form extract the current form state
+          if (isForm.value) {
+            const { formState } = useSharedFormStoreOrThrow()
+            row = formState?.value
+          }
+
           childrenExcludedList.value = await $api.public.dataRelationList(
             route.value.params.viewId as string,
             column.value.id,
@@ -197,6 +197,9 @@ const [useProvideLTARStore, useLTARStore] = useInjectionState(
                   childrenExcludedListPagination.query &&
                   `(${relatedTableDisplayValueProp.value},like,${childrenExcludedListPagination.query})`,
                 fields: [relatedTableDisplayValueProp.value, ...relatedTablePrimaryKeyProps.value],
+
+                // todo: include only required fields
+                rowData: JSON.stringify(row),
               } as RequestParams,
             },
           )
@@ -214,9 +217,28 @@ const [useProvideLTARStore, useLTARStore] = useInjectionState(
                 childrenExcludedListPagination.query &&
                 `(${relatedTableDisplayValueProp.value},like,${childrenExcludedListPagination.query})`,
               // fields: [relatedTableDisplayValueProp.value, ...relatedTablePrimaryKeyProps.value],
+
+              // todo: include only required fields
+              linkColumnId: column.value.fk_column_id || column.value.id,
+              linkRowData: JSON.stringify(row.value.row),
             } as any,
           )
+          const ids = new Set(childrenList.value?.list?.map((item) => item.Id) ?? [])
+          if (childrenExcludedList.value.list && ids.size) {
+            childrenExcludedList.value.list = childrenExcludedList.value.list.filter((item) => !ids.has(item.Id))
+          }
         } else {
+          // extract changed data and include with the api call if any
+          let changedRowData
+          try {
+            if (row.value?.row) {
+              changedRowData = Object.keys(row.value?.row).reduce((acc: Record<string, any>, key: string) => {
+                if (row.value.row[key] !== row.value.oldRow[key]) acc[key] = row.value.row[key]
+                return acc
+              }, {})
+            }
+          } catch {}
+
           childrenExcludedList.value = await $api.dbTableRow.nestedChildrenExcludedList(
             NOCO,
             baseId,
@@ -231,6 +253,7 @@ const [useProvideLTARStore, useLTARStore] = useInjectionState(
               where:
                 childrenExcludedListPagination.query &&
                 `(${relatedTableDisplayValueProp.value},like,${childrenExcludedListPagination.query})`,
+              linkRowData: changedRowData ? JSON.stringify(changedRowData) : undefined,
             } as any,
           )
         }
@@ -279,11 +302,13 @@ const [useProvideLTARStore, useLTARStore] = useInjectionState(
       }
     }
 
-    const loadChildrenList = async (resetOffset: boolean = false) => {
+    const loadChildrenList = async (resetOffset: boolean = false, activeState: any = undefined) => {
+      if (activeState) newRowState.state = activeState
+
       try {
         isChildrenLoading.value = true
         if ([RelationTypes.BELONGS_TO, RelationTypes.ONE_TO_ONE].includes(colOptions.value.type)) return
-        if (!rowId.value || !column.value) return
+        if (!column.value) return
         let offset = childrenListPagination.size * (childrenListPagination.page - 1) + childrenListOffsetCount.value
         if (offset < 0 || resetOffset) {
           offset = 0
@@ -293,7 +318,26 @@ const [useProvideLTARStore, useLTARStore] = useInjectionState(
           offset = 0
         }
 
-        if (isPublic.value) {
+        if (isNewRow?.value || !rowId.value) {
+          const colTitle = column.value?.title || ''
+          const rawList = newRowState.state?.[colTitle] ?? []
+          const query = childrenListPagination.query.toLocaleLowerCase()
+          const list = query
+            ? rawList.filter((record: Record<string, any>) =>
+                `${record[relatedTableDisplayValueProp.value] ?? ''}`.toLocaleLowerCase().includes(query),
+              )
+            : rawList
+          childrenList.value = {
+            list,
+            pageInfo: {
+              isFirstPage: true,
+              isLastPage: list.length <= 10,
+              page: 1,
+              pageSize: 10,
+              totalRows: list.length,
+            },
+          }
+        } else if (isPublic.value) {
           childrenList.value = await $api.public.dataNestedList(
             sharedView.value?.uuid as string,
             encodeURIComponent(rowId.value),
@@ -526,7 +570,7 @@ const [useProvideLTARStore, useLTARStore] = useInjectionState(
     })
 
     watch(childrenListPagination, async () => {
-      await loadChildrenList()
+      await loadChildrenList(false, newRowState.state)
     })
 
     watch(childrenList, async () => {

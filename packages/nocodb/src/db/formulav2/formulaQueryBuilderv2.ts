@@ -1,7 +1,9 @@
 import jsep from 'jsep';
 import {
+  ComparisonOperators,
   FormulaDataTypes,
   jsepCurlyHook,
+  LongTextAiMetaProp,
   RelationTypes,
   UITypes,
   validateDateWithUnknownFormat,
@@ -13,15 +15,17 @@ import genRollupSelectv2 from '../genRollupSelectv2';
 import type RollupColumn from '~/models/RollupColumn';
 import type LinkToAnotherRecordColumn from '~/models/LinkToAnotherRecordColumn';
 import type LookupColumn from '~/models/LookupColumn';
-import type { BaseModelSqlv2 } from '~/db/BaseModelSqlv2';
 import type Column from '~/models/Column';
+import type { User } from '~/models';
+import type { BaseModelSqlv2 } from '~/db/BaseModelSqlv2';
 import Model from '~/models/Model';
 import NocoCache from '~/cache/NocoCache';
 import { CacheScope } from '~/utils/globals';
 import { convertDateFormatForConcat } from '~/helpers/formulaFnHelper';
 import FormulaColumn from '~/models/FormulaColumn';
-import { Base, BaseUser } from '~/models';
+import { BaseUser, ButtonColumn } from '~/models';
 import { getRefColumnIfAlias } from '~/helpers';
+import { ExternalTimeout, NcError } from '~/helpers/catchError';
 
 const logger = new Logger('FormulaQueryBuilderv2');
 
@@ -58,19 +62,67 @@ const getAggregateFn: (fnName: string) => (args: { qb; knex?; cn }) => any = (
   }
 };
 
-async function _formulaQueryBuilder(
-  baseModelSqlv2: BaseModelSqlv2,
-  _tree,
-  alias,
-  model: Model,
-  aliasToColumn: Record<string, () => Promise<{ builder: any }>> = {},
-  tableAlias?: string,
-  parsedTree?: any,
-  column: Column = null,
-) {
+async function _formulaQueryBuilder(params: {
+  baseModelSqlv2: BaseModelSqlv2;
+  _tree;
+  alias;
+  model: Model;
+  aliasToColumn?: Record<string, () => Promise<{ builder: any }>>;
+  tableAlias?: string;
+  parsedTree?: any;
+  column?: Column;
+  baseUsers?: (Partial<User> & BaseUser)[];
+}) {
+  const getLinkedColumnDisplayValue = async (params: {
+    model: Model;
+    aliasToColumn?: Record<string, () => Promise<{ builder: any }>>;
+  }) => {
+    const displayValueColumn = params.model?.displayValue;
+    if (!displayValueColumn) {
+      return undefined;
+    }
+    const formulOption = await params.model.displayValue.getColOptions<
+      FormulaColumn | ButtonColumn
+    >(baseModelSqlv2.context);
+    if (displayValueColumn.uidt !== UITypes.Formula) {
+      return displayValueColumn.column_name;
+    } else {
+      const innerQb = await _formulaQueryBuilder({
+        baseModelSqlv2: await Model.getBaseModelSQL(baseModelSqlv2.context, {
+          model: params.model,
+          dbDriver: baseModelSqlv2.dbDriver,
+        }),
+        _tree: formulOption.formula,
+        alias,
+        model: params.model,
+        column: params.model.displayValue,
+        aliasToColumn: params.aliasToColumn,
+        tableAlias,
+        parsedTree: formulOption.getParsedTree(),
+        baseUsers,
+      });
+      return innerQb;
+    }
+  };
+
+  const {
+    baseModelSqlv2,
+    _tree,
+    alias,
+    model,
+    aliasToColumn = {},
+    tableAlias,
+    parsedTree,
+    column = null,
+  } = params;
+
+  let { baseUsers = null } = params;
+
   const knex = baseModelSqlv2.dbDriver;
 
-  const columns = await model.getColumns();
+  const context = baseModelSqlv2.context;
+
+  const columns = await model.getColumns(context);
 
   let tree = parsedTree;
   if (!tree) {
@@ -92,22 +144,33 @@ async function _formulaQueryBuilder(
         | 'sqlite'
         | 'snowflake',
       getMeta: async (modelId) => {
-        const model = await Model.get(modelId);
-        await model.getColumns();
+        const model = await Model.get(context, modelId);
+        await model.getColumns(context);
         return model;
       },
     });
 
     // populate and save parsedTree to column if not exist
     if (column) {
-      FormulaColumn.update(column.id, { parsed_tree: tree }).then(
-        () => {
-          // ignore
-        },
-        (err) => {
-          logger.error(err);
-        },
-      );
+      if (column.uidt === UITypes.Formula) {
+        FormulaColumn.update(context, column.id, { parsed_tree: tree }).then(
+          () => {
+            // ignore
+          },
+          (err) => {
+            logger.error(err);
+          },
+        );
+      } else {
+        ButtonColumn.update(context, column.id, { parsed_tree: tree }).then(
+          () => {
+            // ignore
+          },
+          (err) => {
+            logger.error(err);
+          },
+        );
+      }
     }
   }
 
@@ -119,18 +182,22 @@ async function _formulaQueryBuilder(
     if (col.id in aliasToColumn) continue;
     switch (col.uidt) {
       case UITypes.Formula:
+      case UITypes.Button:
         {
           aliasToColumn[col.id] = async () => {
-            const formulOption = await col.getColOptions<FormulaColumn>();
-            const { builder } = await _formulaQueryBuilder(
+            const formulOption = await col.getColOptions<
+              FormulaColumn | ButtonColumn
+            >(context);
+            const { builder } = await _formulaQueryBuilder({
               baseModelSqlv2,
-              formulOption.formula,
+              _tree: formulOption.formula,
               alias,
               model,
-              { ...aliasToColumn, [col.id]: null },
+              aliasToColumn: { ...aliasToColumn, [col.id]: null },
               tableAlias,
-              formulOption.getParsedTree(),
-            );
+              parsedTree: formulOption.getParsedTree(),
+              baseUsers,
+            });
             builder.sql = '(' + builder.sql + ')';
             return {
               builder,
@@ -144,19 +211,21 @@ async function _formulaQueryBuilder(
           let selectQb;
           let isArray = false;
           const alias = `__nc_formula${aliasCount++}`;
-          const lookup = await col.getColOptions<LookupColumn>();
+          const lookup = await col.getColOptions<LookupColumn>(context);
           {
-            const relationCol = await lookup.getRelationColumn();
+            const relationCol = await lookup.getRelationColumn(context);
             const relation =
-              await relationCol.getColOptions<LinkToAnotherRecordColumn>();
+              await relationCol.getColOptions<LinkToAnotherRecordColumn>(
+                context,
+              );
             // if (relation.type !== RelationTypes.BELONGS_TO) continue;
 
-            const childColumn = await relation.getChildColumn();
-            const parentColumn = await relation.getParentColumn();
-            const childModel = await childColumn.getModel();
-            await childModel.getColumns();
-            const parentModel = await parentColumn.getModel();
-            await parentModel.getColumns();
+            const childColumn = await relation.getChildColumn(context);
+            const parentColumn = await relation.getParentColumn(context);
+            const childModel = await childColumn.getModel(context);
+            await childModel.getColumns(context);
+            const parentModel = await parentColumn.getModel(context);
+            await parentModel.getColumns(context);
 
             let relationType = relation.type;
 
@@ -203,9 +272,13 @@ async function _formulaQueryBuilder(
               case RelationTypes.MANY_TO_MANY:
                 {
                   isArray = true;
-                  const mmModel = await relation.getMMModel();
-                  const mmParentColumn = await relation.getMMParentColumn();
-                  const mmChildColumn = await relation.getMMChildColumn();
+                  const mmModel = await relation.getMMModel(context);
+                  const mmParentColumn = await relation.getMMParentColumn(
+                    context,
+                  );
+                  const mmChildColumn = await relation.getMMChildColumn(
+                    context,
+                  );
 
                   const assocAlias = `__nc${aliasCount++}`;
                   selectQb = knex(
@@ -235,25 +308,27 @@ async function _formulaQueryBuilder(
                 break;
             }
 
-            let lookupColumn = await lookup.getLookupColumn();
+            let lookupColumn = await lookup.getLookupColumn(context);
             let prevAlias = alias;
             while (lookupColumn.uidt === UITypes.Lookup) {
               const nestedAlias = `__nc_formula${aliasCount++}`;
               const nestedLookup =
-                await lookupColumn.getColOptions<LookupColumn>();
-              const relationCol = await nestedLookup.getRelationColumn();
+                await lookupColumn.getColOptions<LookupColumn>(context);
+              const relationCol = await nestedLookup.getRelationColumn(context);
               const relation =
-                await relationCol.getColOptions<LinkToAnotherRecordColumn>();
+                await relationCol.getColOptions<LinkToAnotherRecordColumn>(
+                  context,
+                );
               // if any of the relation in nested lookup is
               // not belongs to then ignore the sort option
               // if (relation.type !== RelationTypes.BELONGS_TO) continue;
 
-              const childColumn = await relation.getChildColumn();
-              const parentColumn = await relation.getParentColumn();
-              const childModel = await childColumn.getModel();
-              await childModel.getColumns();
-              const parentModel = await parentColumn.getModel();
-              await parentModel.getColumns();
+              const childColumn = await relation.getChildColumn(context);
+              const parentColumn = await relation.getParentColumn(context);
+              const childModel = await childColumn.getModel(context);
+              await childModel.getColumns(context);
+              const parentModel = await parentColumn.getModel(context);
+              await parentModel.getColumns(context);
 
               let relationType = relation.type;
 
@@ -291,9 +366,13 @@ async function _formulaQueryBuilder(
                   break;
                 case RelationTypes.MANY_TO_MANY: {
                   isArray = true;
-                  const mmModel = await relation.getMMModel();
-                  const mmParentColumn = await relation.getMMParentColumn();
-                  const mmChildColumn = await relation.getMMChildColumn();
+                  const mmModel = await relation.getMMModel(context);
+                  const mmParentColumn = await relation.getMMParentColumn(
+                    context,
+                  );
+                  const mmChildColumn = await relation.getMMChildColumn(
+                    context,
+                  );
 
                   const assocAlias = `__nc${aliasCount++}`;
 
@@ -323,7 +402,7 @@ async function _formulaQueryBuilder(
 `${prevAlias}.${childColumn.title}`
 );*/
 
-              lookupColumn = await nestedLookup.getLookupColumn();
+              lookupColumn = await nestedLookup.getLookupColumn(context);
               prevAlias = nestedAlias;
             }
 
@@ -336,8 +415,9 @@ async function _formulaQueryBuilder(
                       baseModelSqlv2,
                       knex,
                       alias: prevAlias,
-                      columnOptions:
-                        (await lookupColumn.getColOptions()) as RollupColumn,
+                      columnOptions: (await lookupColumn.getColOptions(
+                        context,
+                      )) as RollupColumn,
                     })
                   ).builder;
                   // selectQb.select(builder);
@@ -363,17 +443,22 @@ async function _formulaQueryBuilder(
                 {
                   const nestedAlias = `__nc_formula${aliasCount++}`;
                   const relation =
-                    await lookupColumn.getColOptions<LinkToAnotherRecordColumn>();
+                    await lookupColumn.getColOptions<LinkToAnotherRecordColumn>(
+                      context,
+                    );
                   // if (relation.type !== RelationTypes.BELONGS_TO) continue;
 
-                  const colOptions =
-                    (await lookupColumn.getColOptions()) as LinkToAnotherRecordColumn;
-                  const childColumn = await colOptions.getChildColumn();
-                  const parentColumn = await colOptions.getParentColumn();
-                  const childModel = await childColumn.getModel();
-                  await childModel.getColumns();
-                  const parentModel = await parentColumn.getModel();
-                  await parentModel.getColumns();
+                  const colOptions = (await lookupColumn.getColOptions(
+                    context,
+                  )) as LinkToAnotherRecordColumn;
+                  const childColumn = await colOptions.getChildColumn(context);
+                  const parentColumn = await colOptions.getParentColumn(
+                    context,
+                  );
+                  const childModel = await childColumn.getModel(context);
+                  await childModel.getColumns(context);
+                  const parentModel = await parentColumn.getModel(context);
+                  await parentModel.getColumns(context);
                   let cn;
 
                   let relationType = relation.type;
@@ -421,10 +506,13 @@ async function _formulaQueryBuilder(
                     case RelationTypes.MANY_TO_MANY:
                       {
                         isArray = true;
-                        const mmModel = await relation.getMMModel();
-                        const mmParentColumn =
-                          await relation.getMMParentColumn();
-                        const mmChildColumn = await relation.getMMChildColumn();
+                        const mmModel = await relation.getMMModel(context);
+                        const mmParentColumn = await relation.getMMParentColumn(
+                          context,
+                        );
+                        const mmChildColumn = await relation.getMMChildColumn(
+                          context,
+                        );
 
                         const assocAlias = `__nc${aliasCount++}`;
 
@@ -481,16 +569,16 @@ async function _formulaQueryBuilder(
               case UITypes.Formula:
                 {
                   const formulaOption =
-                    await lookupColumn.getColOptions<FormulaColumn>();
-                  const lookupModel = await lookupColumn.getModel();
-                  const { builder } = await _formulaQueryBuilder(
+                    await lookupColumn.getColOptions<FormulaColumn>(context);
+                  const lookupModel = await lookupColumn.getModel(context);
+                  const { builder } = await _formulaQueryBuilder({
                     baseModelSqlv2,
-                    formulaOption.formula,
-                    '',
-                    lookupModel,
+                    _tree: formulaOption.formula,
+                    alias: '',
+                    model: lookupModel,
                     aliasToColumn,
-                    formulaOption.getParsedTree(),
-                  );
+                    parsedTree: formulaOption.getParsedTree(),
+                  });
                   if (isArray) {
                     const qb = selectQb;
                     selectQb = (fn) =>
@@ -546,7 +634,7 @@ async function _formulaQueryBuilder(
           const qb = await genRollupSelectv2({
             baseModelSqlv2,
             knex,
-            columnOptions: (await col.getColOptions()) as RollupColumn,
+            columnOptions: (await col.getColOptions(context)) as RollupColumn,
             alias: tableAlias,
           });
           return { builder: knex.raw(qb.builder).wrap('(', ')') };
@@ -555,17 +643,20 @@ async function _formulaQueryBuilder(
       case UITypes.LinkToAnotherRecord:
         aliasToColumn[col.id] = async (): Promise<any> => {
           const alias = `__nc_formula_ll`;
-          const relation = await col.getColOptions<LinkToAnotherRecordColumn>();
+          const relation = await col.getColOptions<LinkToAnotherRecordColumn>(
+            context,
+          );
           // if (relation.type !== RelationTypes.BELONGS_TO) continue;
 
-          const colOptions =
-            (await col.getColOptions()) as LinkToAnotherRecordColumn;
-          const childColumn = await colOptions.getChildColumn();
-          const parentColumn = await colOptions.getParentColumn();
-          const childModel = await childColumn.getModel();
-          await childModel.getColumns();
-          const parentModel = await parentColumn.getModel();
-          await parentModel.getColumns();
+          const colOptions = (await col.getColOptions(
+            context,
+          )) as LinkToAnotherRecordColumn;
+          const childColumn = await colOptions.getChildColumn(context);
+          const parentColumn = await colOptions.getParentColumn(context);
+          const childModel = await childColumn.getModel(context);
+          await childModel.getColumns(context);
+          const parentModel = await parentColumn.getModel(context);
+          await parentModel.getColumns(context);
 
           let relationType = relation.type;
 
@@ -577,8 +668,16 @@ async function _formulaQueryBuilder(
 
           let selectQb;
           if (relationType === RelationTypes.BELONGS_TO) {
+            const linkedDisplayValue = await getLinkedColumnDisplayValue({
+              model: parentModel,
+              aliasToColumn: { ...aliasToColumn, [col.id]: null },
+            });
             selectQb = knex(baseModelSqlv2.getTnPath(parentModel.table_name))
-              .select(parentModel?.displayValue?.column_name)
+              .select(
+                typeof linkedDisplayValue === 'string'
+                  ? linkedDisplayValue
+                  : knex.raw(linkedDisplayValue.builder).wrap('(', ')'),
+              )
               .where(
                 `${baseModelSqlv2.getTnPath(parentModel.table_name)}.${
                   parentColumn.column_name
@@ -604,18 +703,23 @@ async function _formulaQueryBuilder(
                   }.${parentColumn.column_name}`,
                 ]),
               );
-
+            const childDisplayValue = await getLinkedColumnDisplayValue({
+              model: childModel,
+              aliasToColumn: { ...aliasToColumn, [col.id]: null },
+            });
             selectQb = (fn) =>
               knex
                 .raw(
                   getAggregateFn(fn)({
                     qb,
                     knex,
-                    cn: childModel?.displayValue?.column_name,
+                    cn:
+                      typeof childDisplayValue === 'string'
+                        ? childDisplayValue
+                        : childDisplayValue.builder,
                   }),
                 )
                 .wrap('(', ')');
-
             // getAggregateFn();
           } else if (relationType == RelationTypes.MANY_TO_MANY) {
             // todo:
@@ -641,9 +745,9 @@ async function _formulaQueryBuilder(
 
             //   todo: provide unique alias
 
-            const mmModel = await relation.getMMModel();
-            const mmParentColumn = await relation.getMMParentColumn();
-            const mmChildColumn = await relation.getMMChildColumn();
+            const mmModel = await relation.getMMModel(context);
+            const mmParentColumn = await relation.getMMParentColumn(context);
+            const mmChildColumn = await relation.getMMChildColumn(context);
 
             const qb = knex(
               knex.raw(`?? as ??`, [
@@ -693,7 +797,7 @@ async function _formulaQueryBuilder(
       case UITypes.LastModifiedTime:
       case UITypes.DateTime:
         {
-          const refCol = await getRefColumnIfAlias(col);
+          const refCol = await getRefColumnIfAlias(context, col);
 
           if (refCol.id in aliasToColumn) {
             aliasToColumn[col.id] = aliasToColumn[refCol.id];
@@ -749,24 +853,69 @@ async function _formulaQueryBuilder(
       case UITypes.CreatedBy:
       case UITypes.LastModifiedBy:
         {
-          const base = await Base.get(model.base_id);
-          const baseUsers = await BaseUser.getUsersList({
-            base_id: base.id,
-          });
-
-          // create nested replace statement for each user
-          const finalStatement = baseUsers.reduce((acc, user) => {
-            const qb = knex.raw(`REPLACE(${acc}, ?, ?)`, [user.id, user.email]);
-            return qb.toQuery();
-          }, knex.raw(`??`, [col.column_name]).toQuery());
-
           aliasToColumn[col.id] = async (): Promise<any> => {
+            baseUsers =
+              baseUsers ??
+              (await BaseUser.getUsersList(context, {
+                base_id: model.base_id,
+              }));
+
+            // create nested replace statement for each user
+            const finalStatement = baseUsers.reduce((acc, user) => {
+              const qb = knex.raw(`REPLACE(${acc}, ?, ?)`, [
+                user.id,
+                user.email,
+              ]);
+              return qb.toQuery();
+            }, knex.raw(`??`, [col.column_name]).toQuery());
+
             return {
               builder: knex.raw(finalStatement).wrap('(', ')'),
             };
           };
         }
         break;
+      case UITypes.LongText: {
+        if (col.meta?.[LongTextAiMetaProp] === true) {
+          if (knex.clientType() === 'pg') {
+            aliasToColumn[col.id] = async (): Promise<any> => {
+              return {
+                builder: knex.raw(`TRIM('"' FROM (??::jsonb->>'value'))`, [
+                  col.column_name,
+                ]),
+              };
+            };
+          } else if (knex.clientType().startsWith('mysql')) {
+            aliasToColumn[col.id] = async (): Promise<any> => {
+              return {
+                builder: knex.raw(`JSON_UNQUOTE(JSON_EXTRACT(??, '$.value'))`, [
+                  col.column_name,
+                ]),
+              };
+            };
+          } else if (knex.clientType() === 'sqlite3') {
+            aliasToColumn[col.id] = async (): Promise<any> => {
+              return {
+                builder: knex.raw(`json_extract(??, '$.value')`, [
+                  col.column_name,
+                ]),
+              };
+            };
+          } else if (knex.clientType() === 'mssql') {
+            aliasToColumn[col.id] = async (): Promise<any> => {
+              return {
+                builder: knex.raw(`JSON_VALUE(??, '$.value')`, [
+                  col.column_name,
+                ]),
+              };
+            };
+          }
+        } else {
+          aliasToColumn[col.id] = () =>
+            Promise.resolve({ builder: col.column_name });
+        }
+        break;
+      }
       default:
         aliasToColumn[col.id] = () =>
           Promise.resolve({ builder: col.column_name });
@@ -864,6 +1013,21 @@ async function _formulaQueryBuilder(
                   value: ')',
                   raw: '")"',
                 },
+                ...(pt.arguments[1]
+                  ? [
+                      {
+                        type: 'Literal',
+                        value: ' LABEL::(',
+                        raw: ' LABEL::(',
+                      },
+                      pt.arguments[1],
+                      {
+                        type: 'Literal',
+                        value: ')',
+                        raw: ')',
+                      },
+                    ]
+                  : []),
               ],
               callee: {
                 type: 'Identifier',
@@ -902,6 +1066,7 @@ async function _formulaQueryBuilder(
                 if (calleeName === 'CONCAT') {
                   if (knex.clientType() !== 'sqlite3') {
                     query = await convertDateFormatForConcat(
+                      context,
                       arg,
                       columnIdToUidt,
                       query,
@@ -1082,56 +1247,60 @@ async function _formulaQueryBuilder(
       let right = (await fn(pt.right, null, pt.operator)).builder.toQuery();
       let sql = `${left} ${pt.operator} ${right}${colAlias}`;
 
-      // comparing a date with empty string would throw
-      // `ERROR: zero-length delimited identifier` in Postgres
-      if (
-        knex.clientType() === 'pg' &&
-        columnIdToUidt[pt.left.name] === UITypes.Date
-      ) {
-        // The correct way to compare with Date should be using
-        // `IS_AFTER`, `IS_BEFORE`, or `IS_SAME`
-        // This is to prevent empty data returned to UI due to incorrect SQL
-        if (pt.right.value === '') {
-          if (pt.operator === '=') {
-            sql = `${left} IS NULL ${colAlias}`;
-          } else {
+      if (ComparisonOperators.includes(pt.operator)) {
+        // comparing a date with empty string would throw
+        // `ERROR: zero-length delimited identifier` in Postgres
+        if (
+          knex.clientType() === 'pg' &&
+          columnIdToUidt[pt.left.name] === UITypes.Date
+        ) {
+          // The correct way to compare with Date should be using
+          // `IS_AFTER`, `IS_BEFORE`, or `IS_SAME`
+          // This is to prevent empty data returned to UI due to incorrect SQL
+          if (pt.right.value === '') {
+            if (pt.operator === '=') {
+              sql = `${left} IS NULL ${colAlias}`;
+            } else {
+              sql = `${left} IS NOT NULL ${colAlias}`;
+            }
+          } else if (!validateDateWithUnknownFormat(pt.right.value)) {
+            // left tree value is date but right tree value is not date
+            // return true if left tree value is not null, else false
             sql = `${left} IS NOT NULL ${colAlias}`;
           }
-        } else if (!validateDateWithUnknownFormat(pt.right.value)) {
-          // left tree value is date but right tree value is not date
-          // return true if left tree value is not null, else false
-          sql = `${left} IS NOT NULL ${colAlias}`;
         }
-      }
-      if (
-        knex.clientType() === 'pg' &&
-        columnIdToUidt[pt.right.name] === UITypes.Date
-      ) {
-        // The correct way to compare with Date should be using
-        // `IS_AFTER`, `IS_BEFORE`, or `IS_SAME`
-        // This is to prevent empty data returned to UI due to incorrect SQL
-        if (pt.left.value === '') {
-          if (pt.operator === '=') {
-            sql = `${right} IS NULL ${colAlias}`;
-          } else {
+        if (
+          knex.clientType() === 'pg' &&
+          columnIdToUidt[pt.right.name] === UITypes.Date
+        ) {
+          // The correct way to compare with Date should be using
+          // `IS_AFTER`, `IS_BEFORE`, or `IS_SAME`
+          // This is to prevent empty data returned to UI due to incorrect SQL
+          if (pt.left.value === '') {
+            if (pt.operator === '=') {
+              sql = `${right} IS NULL ${colAlias}`;
+            } else {
+              sql = `${right} IS NOT NULL ${colAlias}`;
+            }
+          } else if (!validateDateWithUnknownFormat(pt.left.value)) {
+            // right tree value is date but left tree value is not date
+            // return true if right tree value is not null, else false
             sql = `${right} IS NOT NULL ${colAlias}`;
           }
-        } else if (!validateDateWithUnknownFormat(pt.left.value)) {
-          // right tree value is date but left tree value is not date
-          // return true if right tree value is not null, else false
-          sql = `${right} IS NOT NULL ${colAlias}`;
         }
       }
 
       if (pt.left.fnName === 'CONCAT' && knex.clientType() === 'sqlite3') {
         // handle date format
         left = await convertDateFormatForConcat(
+          context,
           pt.left?.arguments?.[0],
           columnIdToUidt,
           left,
           knex.clientType(),
         );
         right = await convertDateFormatForConcat(
+          context,
           pt.right?.arguments?.[0],
           columnIdToUidt,
           right,
@@ -1212,7 +1381,6 @@ async function _formulaQueryBuilder(
     }
   };
   const builder = (await fn(tree, alias)).builder;
-
   return { builder };
 }
 
@@ -1226,25 +1394,31 @@ export default async function formulaQueryBuilderv2(
   tableAlias?: string,
   validateFormula = false,
   parsedTree?: any,
+  baseUsers?: (Partial<User> & BaseUser)[],
 ) {
   const knex = baseModelSqlv2.dbDriver;
+
+  const context = baseModelSqlv2.context;
+
   // register jsep curly hook once only
   jsep.plugins.register(jsepCurlyHook);
   let qb;
   try {
     // generate qb
-    qb = await _formulaQueryBuilder(
+    qb = await _formulaQueryBuilder({
       baseModelSqlv2,
       _tree,
       alias,
       model,
       aliasToColumn,
       tableAlias,
-      parsedTree ??
+      parsedTree:
+        parsedTree ??
         (await column
-          ?.getColOptions<FormulaColumn>()
+          ?.getColOptions<FormulaColumn | ButtonColumn>(context)
           .then((formula) => formula?.getParsedTree())),
-    );
+      baseUsers,
+    });
 
     if (!validateFormula) return qb;
 
@@ -1260,12 +1434,20 @@ export default async function formulaQueryBuilderv2(
 
     // if column is provided, i.e. formula has been created
     if (column) {
-      const formula = await column.getColOptions<FormulaColumn>();
+      const formula = await column.getColOptions<FormulaColumn | ButtonColumn>(
+        context,
+      );
       // clean the previous formula error if the formula works this time
       if (formula.error) {
-        await FormulaColumn.update(column.id, {
-          error: null,
-        });
+        if (formula.constructor.name === 'ButtonColumn') {
+          await ButtonColumn.update(context, column.id, {
+            error: null,
+          });
+        } else {
+          await FormulaColumn.update(context, column.id, {
+            error: null,
+          });
+        }
       }
     }
   } catch (e) {
@@ -1273,16 +1455,27 @@ export default async function formulaQueryBuilderv2(
 
     console.error(e);
     if (column) {
-      // add formula error to show in UI
-      await FormulaColumn.update(column.id, {
-        error: e.message,
-      });
-      // update cache to reflect the error in UI
-      await NocoCache.update(`${CacheScope.COL_FORMULA}:${column.id}`, {
-        error: e.message,
-      });
+      if (column?.uidt === UITypes.Button) {
+        await ButtonColumn.update(context, column.id, {
+          error: null,
+        });
+        // update cache to reflect the error in UI
+        await NocoCache.update(`${CacheScope.COL_BUTTON}:${column.id}`, {
+          error: e.message,
+        });
+      } else if (!(e instanceof ExternalTimeout)) {
+        // add formula error to show in UI
+        await FormulaColumn.update(context, column.id, {
+          error: e.message,
+        });
+
+        // update cache to reflect the error in UI
+        await NocoCache.update(`${CacheScope.COL_FORMULA}:${column.id}`, {
+          error: e.message,
+        });
+      }
     }
-    throw new Error(`Formula error: ${e.message}`);
+    NcError.formulaError(e.message);
   }
   return qb;
 }

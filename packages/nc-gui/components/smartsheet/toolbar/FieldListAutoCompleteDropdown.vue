@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { SelectProps } from 'ant-design-vue'
-import type { ColumnType, LinkToAnotherRecordType } from 'nocodb-sdk'
+import type { ColumnType, LinkToAnotherRecordType, TableType } from 'nocodb-sdk'
 import { RelationTypes, UITypes, isHiddenCol, isLinksOrLTAR, isSystemColumn, isVirtualCol } from 'nocodb-sdk'
 
 const { modelValue, isSort, allowEmpty, ...restProps } = defineProps<{
@@ -8,13 +8,16 @@ const { modelValue, isSort, allowEmpty, ...restProps } = defineProps<{
   isSort?: boolean
   columns?: ColumnType[]
   allowEmpty?: boolean
+  meta: TableType
 }>()
 
 const emit = defineEmits(['update:modelValue'])
 
 const customColumns = toRef(restProps, 'columns')
 
-const meta = inject(MetaInj, ref())
+const meta = toRef(restProps, 'meta')
+
+const fieldNameAlias = inject(FieldNameAlias, ref({} as Record<string, string>))
 
 const { metas } = useMetas()
 
@@ -23,25 +26,44 @@ const localValue = computed({
   set: (val) => emit('update:modelValue', val),
 })
 
-const { showSystemFields, metaColumnById } = useViewColumnsOrThrow()
+const { showSystemFields, metaColumnById, fieldsMap, isLocalMode } = useViewColumnsOrThrow()
 
 const options = computed<SelectProps['options']>(() =>
   (
     customColumns.value?.filter((c: ColumnType) => {
+      if (
+        isLocalMode.value &&
+        c?.id &&
+        fieldsMap.value[c.id] &&
+        (!fieldsMap.value[c.id]?.initialShow || (!showSystemFields.value && isSystemColumn(metaColumnById?.value?.[c.id!])))
+      ) {
+        return false
+      }
+
       if (isSystemColumn(metaColumnById?.value?.[c.id!])) {
-        if (isHiddenCol(c)) {
+        if (isHiddenCol(c, meta.value)) {
           /** ignore mm relation column, created by and last modified by system field */
           return false
         }
       }
+      if (c.uidt === UITypes.Button) return false
       return true
     }) ||
     meta.value?.columns?.filter((c: ColumnType) => {
+      if (
+        isLocalMode.value &&
+        c?.id &&
+        fieldsMap.value[c.id] &&
+        (!fieldsMap.value[c.id]?.initialShow || (!showSystemFields.value && isSystemColumn(metaColumnById?.value?.[c.id!])))
+      ) {
+        return false
+      }
+
       if (c.uidt === UITypes.Links) {
         return true
       }
       if (isSystemColumn(metaColumnById?.value?.[c.id!])) {
-        if (isHiddenCol(c)) {
+        if (isHiddenCol(c, meta.value)) {
           /** ignore mm relation column, created by and last modified by system field */
           return false
         }
@@ -52,7 +74,7 @@ const options = computed<SelectProps['options']>(() =>
           /** hide system columns if not enabled */
           showSystemFields.value
         )
-      } else if (c.uidt === UITypes.QrCode || c.uidt === UITypes.Barcode || c.uidt === UITypes.ID) {
+      } else if (c.uidt === UITypes.QrCode || c.uidt === UITypes.Barcode || c.uidt === UITypes.ID || c.uidt === UITypes.Button) {
         return false
       } else if (isSort) {
         /** ignore hasmany and manytomany relations if it's using within sort menu */
@@ -64,14 +86,38 @@ const options = computed<SelectProps['options']>(() =>
       }
     })
   )
-    // sort and keep system columns at the end
-    ?.sort((field1, field2) => +isSystemColumn(field2) - +isSystemColumn(field1))
+    // sort by view column order and keep system columns at the end
+    ?.sort((field1, field2) => {
+      let orderVal1 = 0
+      let orderVal2 = 0
+      let sortByOrder = 0
+
+      if (isSystemColumn(field1)) {
+        orderVal1 = 1
+      }
+      if (isSystemColumn(field2)) {
+        orderVal2 = 1
+      }
+
+      if (
+        field1?.id &&
+        field2?.id &&
+        fieldsMap.value[field1.id]?.order !== undefined &&
+        fieldsMap.value[field2.id]?.order !== undefined
+      ) {
+        sortByOrder = fieldsMap.value[field1.id].order - fieldsMap.value[field2.id].order
+      }
+
+      return orderVal1 - orderVal2 || sortByOrder
+    })
     ?.map((c: ColumnType) => ({
       value: c.id,
-      label: c.title,
+      label: fieldNameAlias.value[c.id!] || c.title,
       icon: h(
         isVirtualCol(c) ? resolveComponent('SmartsheetHeaderVirtualCellIcon') : resolveComponent('SmartsheetHeaderCellIcon'),
-        { columnMeta: c },
+        {
+          columnMeta: c,
+        },
       ),
       c,
     })),
@@ -81,7 +127,7 @@ const filterOption = (input: string, option: any) => option.label.toLowerCase()?
 
 // when a new filter is created, select a field by default
 if (!localValue.value && allowEmpty !== true) {
-  localValue.value = (options.value?.[0].value as string) || ''
+  localValue.value = (options.value?.[0]?.value as string) || ''
 }
 
 const relationColor = {

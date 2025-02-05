@@ -34,34 +34,41 @@ const isSurveyForm = inject(IsSurveyFormInj, ref(false))
 
 const isGrid = inject(IsGridInj, ref(false))
 
-const { isSharedForm } = useSmartsheetStoreOrThrow()!
-
 const { isMobileMode } = useGlobal()
 
-const { getPossibleAttachmentSrc, openAttachment: _openAttachment } = useAttachment()
+const { getPossibleAttachmentSrc } = useAttachment()
 
 const {
   isPublic,
   isForm,
   column,
+  modalRendered,
+  downloadAttachment,
+  renameFile,
   modalVisible,
   attachments,
   visibleItems,
   onDrop,
   isLoading,
-  open: _open,
-  FileIcon,
-  selectedImage,
+  selectedFile,
   isReadonly,
   storedFiles,
   removeFile,
+  updateAttachmentTitle,
+  isEditAllowed,
 } = useProvideAttachmentCell(updateModelValue)
 
 const { dragging } = useSortable(sortableRef, visibleItems, updateModelValue, isReadonly)
 
 const active = inject(ActiveCellInj, ref(false))
 
-const { state: rowState } = useSmartsheetRowStoreOrThrow()
+const { state: rowState, row } = useSmartsheetRowStoreOrThrow()
+
+const meta = inject(MetaInj, ref())
+
+if (!isPublic.value && !isForm.value && meta.value) {
+  useProvideRowComments(meta, row)
+}
 
 const { isOverDropZone } = useDropZone(currentCellRef as any, onDrop)
 
@@ -118,64 +125,57 @@ watch(
   },
 )
 
-useSelectedCellKeyupListener(inject(ActiveCellInj, ref(false)), (e) => {
-  if (e.key === 'Enter' && !isReadonly.value) {
+const isNewAttachmentModalOpen = ref(false)
+
+const openAttachmentModal = (e: Event) => {
+  e?.stopPropagation()
+  isNewAttachmentModalOpen.value = true
+}
+
+useSelectedCellKeydownListener(inject(ActiveCellInj, ref(false)), (e) => {
+  if (modalVisible.value) return
+  if (e.key === 'Enter' && !isReadonly.value && !selectedFile.value) {
+    if (isNewAttachmentModalOpen.value) return
     e.stopPropagation()
-    if (!modalVisible.value && !isMobileMode.value) {
+    if (!isMobileMode.value && visibleItems.value.length) {
+      modalRendered.value = true
       modalVisible.value = true
     } else {
-      // click Attach File button
-      ;(document.querySelector('.nc-attachment-modal.active .nc-attach-file') as HTMLDivElement)?.click()
+      // open attachment modal
+      openAttachmentModal(e)
     }
   }
 })
 
 const rowHeight = inject(RowHeightInj, ref())
 
-const open = (e: Event) => {
-  e.stopPropagation()
-
-  _open()
-}
-
-const openAttachment = (item: any) => {
-  if (isMobileMode.value && !isExpandedForm.value) {
-    isExpandedForm.value = true
-
-    return
-  }
-
-  _openAttachment(item)
-}
-
 const onExpand = () => {
   if (isMobileMode.value) return
 
+  modalRendered.value = true
   modalVisible.value = true
 }
 
-const onImageClick = (item: any) => {
+const onFileClick = (item: any) => {
   if (isMobileMode.value && !isExpandedForm.value) return
 
-  if (!isMobileMode.value && (isGallery.value || (isKanban.value && !isExpandedForm.value))) return
-
-  selectedImage.value = item
+  if (!isMobileMode.value && (isGallery.value || isKanban.value) && !isExpandedForm.value) return
+  selectedFile.value = item
 }
 
 const keydownEnter = (e: KeyboardEvent) => {
   if (!isSurveyForm.value) {
-    open(e)
+    openAttachmentModal(e)
     e.stopPropagation()
   }
 }
 const keydownSpace = (e: KeyboardEvent) => {
   if (isSurveyForm.value) {
-    open(e)
+    openAttachmentModal(e)
     e.stopPropagation()
   }
 }
 
-const { isUIAllowed } = useRoles()
 const isConfirmModalOpen = ref(false)
 const filetoDelete = reactive({
   title: '',
@@ -194,168 +194,85 @@ const handleFileDelete = (i: number) => {
   filetoDelete.i = 0
   filetoDelete.title = ''
 }
+
+const attachmentSize = computed(() => {
+  if (isForm.value || isExpandedForm.value) {
+    return 'small'
+  }
+
+  switch (rowHeight.value) {
+    case 1:
+      return 'tiny'
+    case 2:
+      return 'tiny'
+    case 4:
+      return 'small'
+    case 6:
+      return 'small'
+    default:
+      return 'tiny'
+  }
+})
+
+const showAllAttachments = ref(false)
+
+defineExpose({
+  openFilePicker: openAttachmentModal,
+  downloadAttachment,
+  renameAttachment: renameFile,
+  removeAttachment: onRemoveFileClick,
+  updateAttachmentTitle,
+})
 </script>
 
 <template>
-  <div
-    ref="attachmentCellRef"
-    :style="{
-      height:
-        isForm || isExpandedForm
-          ? undefined
-          : `max(${!rowHeight || rowHeight === 1 ? rowHeightInPx['1'] - 10 : rowHeightInPx[`${rowHeight}`] - 18}px, ${
-              isGrid ? '22px' : '32px'
-            })`,
-    }"
-    class="nc-attachment-cell relative flex color-transition flex items-center w-full xs:(min-h-12 max-h-32)"
-    :class="{ 'justify-center': !active, 'justify-between': active, 'px-2': isExpandedForm }"
-  >
-    <LazyCellAttachmentCarousel />
-
-    <template v-if="isSharedForm || (!isReadonly && !dragging && !!currentCellRef)">
-      <general-overlay
-        v-model="isOverDropZone"
-        inline
-        :target="currentCellRef"
-        data-rec="true"
-        class="nc-attachment-cell-dropzone text-white text-lg ring ring-accent ring-opacity-100 bg-gray-700/75 flex items-center justify-center gap-2 backdrop-blur-xl"
-      >
-        <MaterialSymbolsFileCopyOutline class="text-accent" />
-        {{ $t('labels.dropHere') }}
-      </general-overlay>
-    </template>
-
-    <div
-      v-if="!isReadonly"
-      :class="{ 'sm:(mx-auto px-4) xs:(w-full min-w-8)': !visibleItems.length }"
-      class="group cursor-pointer py-1 flex gap-1 items-center active:(ring ring-accent ring-opacity-100) rounded border-none shadow-sm hover:(bg-primary bg-opacity-10) dark:(!bg-slate-500)"
-      data-testid="attachment-cell-file-picker-button"
-      tabindex="0"
-      @click="open"
-      @keydown.enter="keydownEnter"
-      @keydown.space="keydownSpace"
-    >
-      <component :is="iconMap.reload" v-if="isLoading" :class="{ 'animate-infinite animate-spin': isLoading }" />
-
-      <NcTooltip placement="bottom" class="xs:w-full">
-        <template #title
-          ><span data-rec="true">{{ $t('activity.attachmentDrop') }} </span></template
-        >
-
-        <div
-          v-if="active || !visibleItems.length || (isForm && visibleItems.length)"
-          class="flex items-center gap-1 xs:(w-full min-w-12 h-7 justify-center)"
-        >
-          <MaterialSymbolsAttachFile
-            class="transform dark:(!text-white) group-hover:(!text-accent scale-120) text-gray-500 text-tiny"
-          />
-          <div
-            v-if="!visibleItems.length"
-            data-rec="true"
-            class="group-hover:text-primary text-gray-500 dark:text-gray-200 dark:group-hover:!text-white text-tiny xs:(justify-center rounded-lg text-sm)"
-          >
-            {{ $t('activity.addFiles') }}
-          </div>
-        </div>
-      </NcTooltip>
+  <div v-if="isExpandedForm || isForm" class="form-attachment-cell">
+    <LazyCellAttachmentCarousel v-if="selectedFile" />
+    <div v-if="visibleItems.length > 0" class="flex flex-wrap items-stretch mb-2 gap-2">
+      <CellAttachmentCard
+        v-for="(item, i) in showAllAttachments ? visibleItems : visibleItems.slice(0, 3)"
+        :key="`${item?.title}-${i}`"
+        v-model:dragging="dragging"
+        class="nc-attachment-item group gap-2 flex border-1 rounded-md border-gray-200 flex-col relative w-[124px] overflow-hidden"
+        :attachment="item"
+        :index="i"
+        :allow-selection="false"
+        :allow-rename="isEditAllowed"
+        :allow-delete="!isReadonly"
+        preview-class-override="!h-20"
+        :rename-inline="false"
+        :confirm-to-delete="true"
+        @clicked="onFileClick(item)"
+        @on-delete="onRemoveFileClick(item.title, i)"
+      />
     </div>
-
-    <div v-else class="flex" />
-
-    <template v-if="visibleItems.length">
-      <div
-        ref="sortableRef"
-        :class="{
-          'justify-center': !isExpandedForm && !isGallery && !isKanban,
-          'py-1': rowHeight === 1 && !isForm && !isExpandedForm,
-          'py-1.5': rowHeight !== 1 || isForm || isExpandedForm,
-        }"
-        class="nc-attachment-wrapper flex cursor-pointer w-full items-center flex-wrap gap-2 scrollbar-thin-dull overflow-hidden mt-0 items-start"
-        :style="{
-          maxHeight: isForm || isExpandedForm ? undefined : `max(100%, ${isGrid ? '22px' : '32px'})`,
-        }"
-      >
-        <template v-for="(item, i) of visibleItems" :key="item.url || item.title">
-          <NcTooltip placement="bottom" class="nc-attachment-item">
-            <template #title>
-              <div class="text-center w-full">{{ item.title }}</div>
-            </template>
-            <div v-if="isImage(item.title, item.mimetype ?? item.type)">
-              <div
-                class="nc-attachment flex items-center flex-col flex-wrap justify-center flex-auto"
-                :class="{ 'ml-2': active, '!w-30': isForm || isExpandedForm }"
-                @click="() => onImageClick(item)"
-              >
-                <LazyCellAttachmentImage
-                  :alt="item.title || `#${i}`"
-                  class="rounded"
-                  :class="{
-                    'h-5.5': !isGrid && (!rowHeight || rowHeight === 1),
-                    'h-4.5': isGrid && (!rowHeight || rowHeight === 1),
-                    'h-8': rowHeight === 2,
-                    'h-16.8': rowHeight === 4,
-                    'h-20.8': rowHeight === 6 || isForm || isExpandedForm,
-                  }"
-                  :srcs="getPossibleAttachmentSrc(item)"
-                />
-              </div>
-            </div>
-            <div
-              v-else
-              class="nc-attachment flex items-center justify-center px-4"
-              :class="{
-                'h-5.5': !isGrid && (!rowHeight || rowHeight === 1),
-                'h-4.5': isGrid && (!rowHeight || rowHeight === 1),
-                'h-8': rowHeight === 2,
-                'h-16.8': rowHeight === 4,
-                'h-20.8 !w-30': rowHeight === 6 || isForm || isExpandedForm,
-                'ml-2': active,
-              }"
-              @click="openAttachment(item)"
-            >
-              <component :is="FileIcon(item.icon)" v-if="item.icon" :class="{ 'h-13 w-13': isForm || isExpandedForm }" />
-
-              <IcOutlineInsertDriveFile v-else :class="{ 'h-13 w-13': isForm || isExpandedForm }" />
-            </div>
-
-            <a-tooltip v-if="isForm || isExpandedForm">
-              <template #title> {{ $t('title.removeFile') }} </template>
-              <component
-                :is="iconMap.closeCircle"
-                v-if="isSharedForm || (isUIAllowed('dataEdit') && !isPublic)"
-                class="nc-attachment-remove"
-                @click.stop="onRemoveFileClick(item.title, i)"
-              />
-            </a-tooltip>
-          </NcTooltip>
-        </template>
+    <div v-if="visibleItems.length > 3" class="mb-2">
+      <NcButton type="text" size="small" @click="showAllAttachments = !showAllAttachments">
+        {{
+          showAllAttachments ? `${$t('general.showLess')}` : `+ ${visibleItems.length - 3} ${$t('general.more').toLowerCase()}`
+        }}
+      </NcButton>
+    </div>
+    <NcButton
+      v-if="isEditAllowed"
+      data-testid="attachment-cell-file-picker-button"
+      type="secondary"
+      size="xsmall"
+      class="mb-1 !px-2"
+      @click="openAttachmentModal"
+    >
+      <div class="flex items-center gap-1.5 justify-center">
+        <GeneralIcon icon="upload" class="text-gray-500 h-3.5 w-3.5" />
+        <span class="text-tiny">
+          {{ $t('activity.uploadFiles') }}
+        </span>
       </div>
-
-      <div
-        v-if="active || (isForm && visibleItems.length)"
-        class="xs:hidden h-6 w-5.5 group cursor-pointer flex gap-1 items-center active:(ring ring-accent ring-opacity-100) rounded border-none p-1 hover:(bg-primary bg-opacity-10) dark:(!bg-slate-500)"
-      >
-        <component :is="iconMap.reload" v-if="isLoading" :class="{ 'animate-infinite animate-spin': isLoading }" />
-
-        <NcTooltip v-else placement="bottom" class="flex">
-          <template #title> {{ $t('activity.viewAttachment') }}</template>
-
-          <component
-            :is="iconMap.expand"
-            class="flex-none transform dark:(!text-white) group-hover:(!text-grey-800 scale-120) text-gray-500 text-sm"
-            @click.stop="onExpand"
-          />
-        </NcTooltip>
-      </div>
-    </template>
-
-    <LazyCellAttachmentModal />
+    </NcButton>
 
     <LazyGeneralDeleteModal
-      v-if="isForm || isExpandedForm"
       v-model:visible="isConfirmModalOpen"
       entity-name="File"
-      :on-delete="() => handleFileDelete(filetoDelete.i)"
+      :on-delete="async () => handleFileDelete(filetoDelete.i)"
     >
       <template #entity-preview>
         <span>
@@ -372,9 +289,161 @@ const handleFileDelete = (i: number) => {
       </template>
     </LazyGeneralDeleteModal>
   </div>
+  <div v-else ref="attachmentCellRef" class="nc-attachment-cell relative group color-transition">
+    <LazyCellAttachmentCarousel v-if="selectedFile" />
+
+    <template v-if="!isReadonly && !dragging && !!currentCellRef">
+      <general-overlay
+        v-model="isOverDropZone"
+        inline
+        :target="currentCellRef"
+        data-rec="true"
+        class="nc-attachment-cell-dropzone text-white text-lg bg-gray-600/75 flex text-sm items-center justify-center gap-2"
+      >
+        <MaterialSymbolsFileCopyOutline />
+        {{ $t('labels.dropHere') }}
+      </general-overlay>
+    </template>
+
+    <div
+      v-if="!isReadonly && active && !visibleItems.length"
+      :class="{ 'sm:(mx-auto px-4) xs:(w-full min-w-8)': !visibleItems.length }"
+      class="group cursor-pointer flex gap-1 items-center rounded border-none"
+      tabindex="0"
+      @keydown.enter="keydownEnter"
+      @keydown.space="keydownSpace"
+    >
+      <component :is="iconMap.reload" v-if="isLoading" :class="{ 'animate-infinite animate-spin': isLoading }" />
+
+      <NcTooltip placement="bottom" class="w-full text-center">
+        <template #title>
+          <span data-rec="true">{{ $t('activity.attachmentDrop') }} </span>
+        </template>
+
+        <NcButton
+          type="secondary"
+          size="xs"
+          data-testid="attachment-cell-file-picker-button"
+          class="!px-2 !h-6 !min-w-[fit-content]"
+          @click.stop="openAttachmentModal"
+        >
+          <div class="flex items-center gap-1 justify-center">
+            <GeneralIcon icon="upload" class="text-gray-500 text-tiny" />
+            <span class="text-[10px]">
+              {{ $t('activity.addFiles') }}
+            </span>
+          </div>
+        </NcButton>
+      </NcTooltip>
+    </div>
+
+    <template v-if="visibleItems.length > 0">
+      <div
+        ref="sortableRef"
+        :class="{
+          'justify-center': !isGallery && !isKanban,
+        }"
+        class="nc-attachment-wrapper flex cursor-pointer w-full items-center flex-wrap gap-2 mt-0 items-start overflow-y-auto nc-scrollbar-thin"
+        :style="{
+          height: `max(${
+            !rowHeight || rowHeight === 1 ? Number(rowHeightInPx['1']) - 1 : rowHeightInPx[`${rowHeight}`] - 17
+          }px, ${isGrid ? 22 : 32}px)`,
+          paddingTop: !rowHeight || rowHeight === 1 ? '4px !important' : undefined,
+          paddingBottom: !rowHeight || rowHeight === 1 ? '4px !important' : undefined,
+        }"
+      >
+        <NcTooltip v-for="(item, i) of visibleItems" :key="item.url || item.title" placement="bottom" class="nc-attachment-item">
+          <template #title>
+            <div class="text-center w-full">{{ item.title }}</div>
+          </template>
+          <div
+            class="aspect-square"
+            :class="{
+              'h-[24px]': !rowHeight || rowHeight === 1,
+              'h-[32px]': rowHeight === 2,
+              'h-[64px]': rowHeight === 4 || rowHeight === 6,
+            }"
+          >
+            <LazyCellAttachmentPreviewImage
+              v-if="isImage(item.title, item.mimetype ?? item.type)"
+              :alt="item.title || `#${i}`"
+              class="nc-attachment rounded-lg w-full h-full object-cover overflow-hidden"
+              :srcs="getPossibleAttachmentSrc(item, attachmentSize)"
+              @click="() => onFileClick(item)"
+            />
+            <div v-else class="nc-attachment h-full w-full flex items-center justify-center" @click="onFileClick(item)">
+              <CellAttachmentIconView :item="item" class="max-h-full max-w-full" />
+            </div>
+          </div>
+        </NcTooltip>
+      </div>
+
+      <NcTooltip
+        placement="bottom"
+        class="nc-action-icon !absolute hidden right-0 nc-text-area-expand-btn !group-hover:block z-3"
+        :class="{
+          'top-0': isGrid && !(!rowHeight || rowHeight === 1),
+          'top-1': !isGrid,
+        }"
+        :style="isGrid && (!rowHeight || rowHeight === 1) ? { top: '50%', transform: 'translateY(-50%)' } : undefined"
+      >
+        <template #title>{{ $t('activity.viewAttachment') }}</template>
+        <NcButton
+          type="secondary"
+          size="xsmall"
+          data-testid="attachment-cell-file-picker-button"
+          class="!p-0 !w-5 !h-5 !min-w-[fit-content]"
+          @click.stop="onExpand"
+        >
+          <component :is="iconMap.reload" v-if="isLoading" :class="{ 'animate-infinite animate-spin': isLoading }" />
+
+          <component :is="iconMap.maximize" v-else class="transform group-hover:(!text-grey-800) text-gray-700 w-3 h-3" />
+        </NcButton>
+      </NcTooltip>
+
+      <NcTooltip
+        v-if="isEditAllowed"
+        placement="bottom"
+        class="nc-action-icon !absolute hidden left-0 nc-text-area-expand-btn !group-hover:block z-3"
+        :class="{
+          'top-0': isGrid && !(!rowHeight || rowHeight === 1),
+          'top-1': !isGrid,
+        }"
+        :style="isGrid && (!rowHeight || rowHeight === 1) ? { top: '50%', transform: 'translateY(-50%)' } : undefined"
+      >
+        <template #title>{{ $t('activity.addFiles') }}</template>
+        <NcButton
+          type="secondary"
+          size="xsmall"
+          data-testid="attachment-cell-file-picker-button"
+          class="!p-0 !w-5 !h-5 !min-w-[fit-content]"
+          @click.stop="openAttachmentModal"
+        >
+          <MaterialSymbolsAttachFile class="text-gray-500 text-tiny group-hover:(!text-grey-800) text-gray-700" />
+        </NcButton>
+      </NcTooltip>
+    </template>
+
+    <LazyCellAttachmentModal v-if="modalRendered" />
+  </div>
+  <LazyCellAttachmentAttachFile v-if="isNewAttachmentModalOpen" v-model:value="isNewAttachmentModalOpen" />
 </template>
 
 <style lang="scss">
+.nc-data-cell {
+  &:has(.form-attachment-cell) {
+    @apply !border-none pt-1 -mt-1;
+    box-shadow: none !important;
+
+    &:focus-within:not(.nc-readonly-div-data-cell):not(.nc-system-field) {
+      box-shadow: none !important;
+    }
+  }
+
+  .nc-cell-attachment {
+    @apply !border-none;
+  }
+}
 .nc-cell {
   .nc-attachment-cell {
     .nc-attachment {
@@ -394,15 +463,6 @@ const handleFileDelete = (i: number) => {
   }
   .nc-attachment-item {
     @apply relative;
-
-    .nc-attachment-remove {
-      @apply absolute right-0.8 top-0.8 rounded hidden p-0.5 bg-white text-lg leading-none;
-      box-shadow: 0px 0px 4px #bbb;
-    }
-
-    &:hover .nc-attachment-remove {
-      @apply block;
-    }
   }
 }
 </style>

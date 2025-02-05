@@ -1,10 +1,13 @@
 <script lang="ts" setup>
 import {
+  type AIRecordType,
   type BoolType,
+  type ButtonType,
   type ColumnType,
   type LookupType,
   type RollupType,
   dateFormats,
+  isAIPromptCol,
   isCreatedOrLastModifiedByCol,
   isCreatedOrLastModifiedTimeCol,
   timeFormats,
@@ -37,7 +40,11 @@ const { basesUser } = storeToRefs(basesStore)
 
 const { isXcdbBase, isMssql, isMysql } = useBase()
 
-const sqlUi = ref(column.value?.source_id ? sqlUis.value[column.value?.source_id] : Object.values(sqlUis.value)[0])
+const sqlUi = ref(
+  column.value?.source_id && sqlUis.value[column.value?.source_id]
+    ? sqlUis.value[column.value?.source_id]
+    : Object.values(sqlUis.value)[0],
+)
 
 const abstractType = computed(() => column.value && sqlUi.value.getAbstractType(column.value))
 
@@ -89,7 +96,7 @@ const getDateTimeValue = (modelValue: string | null, col: ColumnType) => {
   const isXcDB = isXcdbBase(col.source_id)
 
   if (!isXcDB) {
-    return dayjs(/^\d+$/.test(modelValue) ? +modelValue : modelValue, dateTimeFormat).format(dateTimeFormat)
+    return dayjs(/^\d+$/.test(modelValue) ? +modelValue : modelValue).format(dateTimeFormat)
   }
 
   if (isMssql(col.source_id)) {
@@ -193,10 +200,15 @@ const getIntValue = (modelValue: string | null | number) => {
 }
 
 const getTextAreaValue = (modelValue: string | null, col: ColumnType) => {
-  const isRichMode = typeof col.meta === 'string' ? JSON.parse(col.meta).richMode : col.meta?.richMode
+  const isRichMode = parseProp(col.meta).richMode
   if (isRichMode) {
     return modelValue?.replace(/[*_~\[\]]|<\/?[^>]+(>|$)/g, '') || ''
   }
+
+  if (isAIPromptCol(col)) {
+    return (modelValue as AIRecordType)?.value || ''
+  }
+
   return modelValue || ''
 }
 
@@ -314,12 +326,16 @@ const parseValue = (value: any, col: ColumnType): string => {
     return getIntValue(value)
   }
   if (isJSON(col)) {
-    return JSON.stringify(value, null, 2)
+    try {
+      return JSON.stringify(JSON.parse(value), null, 2)
+    } catch {
+      return value
+    }
   }
   if (isRollup(col)) {
     return getRollupValue(value, col)
   }
-  if (isLookup(col)) {
+  if (isLookup(col) || isLTAR(col.uidt, col.colOptions)) {
     return getLookupValue(value, col)
   }
   if (isCreatedOrLastModifiedTimeCol(col)) {
@@ -335,6 +351,18 @@ const parseValue = (value: any, col: ColumnType): string => {
     return getLinksValue(value, col)
   }
 
+  if (isFormula(col) && col?.meta?.display_type) {
+    return parseValue(value, {
+      uidt: col?.meta?.display_type,
+      ...col?.meta?.display_column_meta,
+    })
+  }
+
+  if (isButton(col)) {
+    if ((col.colOptions as ButtonType).type === 'url') return value
+    else return col.colOptions?.label
+  }
+
   return value as unknown as string
 }
 </script>
@@ -344,7 +372,7 @@ const parseValue = (value: any, col: ColumnType): string => {
     class="plain-cell before:px-1"
     :class="{
       '!font-bold': bold,
-      'italic': italic,
+      '!italic': italic,
       'underline': underline,
     }"
     data-testid="nc-plain-cell"
@@ -355,9 +383,12 @@ const parseValue = (value: any, col: ColumnType): string => {
 
 <style lang="scss" scoped>
 .plain-cell {
+  font-synthesis: initial !important;
   &::before {
     content: '•';
     padding: 0 4px;
+    display: inline-block;
+    text-decoration: none !important;
   }
   &:first-child::before {
     content: '';

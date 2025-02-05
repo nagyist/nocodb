@@ -85,7 +85,10 @@ export class ToolbarPage extends BasePage {
 
   async clickCalendarViewSettings() {
     const menuOpen = await this.calendarRange.get().isVisible();
-    await this.btn_calendarSettings.click();
+    await this.rootPage.waitForTimeout(500);
+    await this.btn_calendarSettings.click({
+      force: true,
+    });
 
     // Wait for the menu to close
     if (menuOpen) await this.calendarRange.get().waitFor({ state: 'hidden' });
@@ -192,28 +195,6 @@ export class ToolbarPage extends BasePage {
     await this.get().locator(`.nc-toolbar-btn.nc-add-new-row-btn`).click();
   }
 
-  async clickDownload(type: string, verificationFile = 'expectedData.txt') {
-    await this.get().locator(`.nc-toolbar-btn.nc-actions-menu-btn`).click();
-
-    const [download] = await Promise.all([
-      // Start waiting for the download
-      this.rootPage.waitForEvent('download'),
-      // Perform the action that initiates download
-      this.rootPage
-        .locator(`.nc-dropdown-actions-menu`)
-        .locator(`li.ant-dropdown-menu-item:has-text("${type}")`)
-        .click(),
-    ]);
-
-    // Save downloaded file somewhere
-    await download.saveAs('./output/at.txt');
-
-    // verify downloaded content against expected content
-    const expectedData = fs.readFileSync(`./fixtures/${verificationFile}`, 'utf8').replace(/\r/g, '').split('\n');
-    const file = fs.readFileSync('./output/at.txt', 'utf8').replace(/\r/g, '').split('\n');
-    expect(file).toEqual(expectedData);
-  }
-
   async clickRowHeight() {
     // ant-btn nc-height-menu-btn nc-toolbar-btn
     await this.get().locator(`.nc-toolbar-btn.nc-height-menu-btn`).click();
@@ -242,8 +223,8 @@ export class ToolbarPage extends BasePage {
     const menuItems = {
       creator: ['Download', 'Upload'],
       editor: ['Download', 'Upload'],
-      commenter: ['Download CSV', 'Download Excel'],
-      viewer: ['Download CSV', 'Download Excel'],
+      commenter: ['CSV', 'Excel'],
+      viewer: ['CSV', 'Excel'],
     };
     const vMenu = this.rootPage.locator('.nc-dropdown-actions-menu:visible');
     for (const item of menuItems[param.role.toLowerCase()]) {
@@ -267,19 +248,64 @@ export class ToolbarPage extends BasePage {
     expect(await this.btn_rowHeight.count()).toBe(1);
   }
 
+  getToolbarBtns() {
+    return [
+      {
+        locator: this.btn_fields,
+        dropdownLocator: this.rootPage.locator('.nc-dropdown.nc-dropdown-fields-menu'),
+      },
+      {
+        locator: this.btn_filter,
+        dropdownLocator: this.rootPage.locator('.nc-dropdown.nc-dropdown-filter-menu'),
+      },
+      {
+        locator: this.btn_sort,
+        dropdownLocator: this.rootPage.locator('.nc-dropdown.nc-dropdown-sort-menu'),
+      },
+      {
+        locator: this.btn_groupBy,
+        dropdownLocator: this.rootPage.locator('.nc-dropdown.nc-dropdown-group-by-menu'),
+      },
+      {
+        locator: this.btn_rowHeight,
+        dropdownLocator: this.rootPage.locator('.ant-dropdown.nc-dropdown-height-menu'),
+      },
+    ];
+  }
+
   async verifyLockMode() {
-    await expect(this.btn_fields).toBeDisabled();
-    await expect(this.btn_filter).toBeDisabled();
-    await expect(this.btn_sort).toBeDisabled();
-    await expect(this.btn_groupBy).toBeDisabled();
-    await expect(this.btn_rowHeight).toBeDisabled();
+    for (const menu of this.getToolbarBtns()) {
+      await menu.locator.click();
+
+      await menu.dropdownLocator.waitFor({ state: 'visible' });
+
+      const lockedViewFooter = menu.dropdownLocator.locator('.nc-locked-view-footer');
+
+      await expect(lockedViewFooter).toBeVisible();
+    }
+  }
+
+  async verifyPersonalMode() {
+    for (const menu of this.getToolbarBtns()) {
+      await menu.locator.click();
+
+      await menu.dropdownLocator.waitFor({ state: 'visible' });
+
+      const lockedViewFooter = menu.dropdownLocator.locator('.nc-locked-view-footer');
+
+      await expect(lockedViewFooter).toBeVisible();
+    }
   }
 
   async verifyCollaborativeMode() {
-    await expect(this.btn_fields).toBeEnabled();
-    await expect(this.btn_filter).toBeEnabled();
-    await expect(this.btn_sort).toBeEnabled();
-    await expect(this.btn_groupBy).toBeEnabled();
-    await expect(this.btn_rowHeight).toBeEnabled();
+    for (const menu of this.getToolbarBtns()) {
+      await menu.locator.click();
+
+      await menu.dropdownLocator.waitFor({ state: 'visible' });
+
+      const lockedViewFooter = menu.dropdownLocator.locator('.nc-locked-view-footer');
+
+      await expect(lockedViewFooter).toBeHidden();
+    }
   }
 }

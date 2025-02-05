@@ -1,10 +1,11 @@
-import { nocoExecute } from 'nc-help';
-import { isSystemColumn, UITypes } from 'nocodb-sdk';
+import { convertMS2Duration, isSystemColumn, UITypes } from 'nocodb-sdk';
 import * as XLSX from 'xlsx';
 import papaparse from 'papaparse';
 import type { BaseModelSqlv2 } from '~/db/BaseModelSqlv2';
 import type LinkToAnotherRecordColumn from '~/models/LinkToAnotherRecordColumn';
 import type LookupColumn from '~/models/LookupColumn';
+import type { NcContext } from '~/interface/config';
+import { nocoExecute } from '~/utils';
 import { NcError } from '~/helpers/catchError';
 import getAst from '~/helpers/getAst';
 import { Model, View } from '~/models';
@@ -25,14 +26,17 @@ export interface OldPathParams {
   viewName?: string;
 }
 
-export async function getViewAndModelByAliasOrId(param: {
-  baseName: string;
-  tableName: string;
-  viewName?: string;
-}) {
-  const base = await Base.getWithInfoByTitleOrId(param.baseName);
+export async function getViewAndModelByAliasOrId(
+  context: NcContext,
+  param: {
+    baseName: string;
+    tableName: string;
+    viewName?: string;
+  },
+) {
+  const base = await Base.getWithInfoByTitleOrId(context, param.baseName);
 
-  const model = await Model.getByAliasOrId({
+  const model = await Model.getByAliasOrId(context, {
     base_id: base.id,
     aliasOrId: param.tableName,
   });
@@ -41,19 +45,20 @@ export async function getViewAndModelByAliasOrId(param: {
 
   const view =
     param.viewName &&
-    (await View.getByTitleOrId({
+    (await View.getByTitleOrId(context, {
       titleOrId: param.viewName,
       fk_model_id: model.id,
     }));
   if (param.viewName && !view) NcError.viewNotFound(param.viewName);
+
   return { model, view };
 }
 
-export async function extractXlsxData(view: View, req) {
-  const source = await Source.get(view.source_id);
+export async function extractXlsxData(context: NcContext, view: View, req) {
+  const source = await Source.get(context, view.source_id);
 
-  await view.getModelWithInfo();
-  await view.getColumns();
+  await view.getModelWithInfo(context);
+  await view.getColumns(context);
 
   view.model.columns = view.columns
     .filter((c) => c.show)
@@ -63,13 +68,13 @@ export async function extractXlsxData(view: View, req) {
     )
     .filter((column) => !isSystemColumn(column) || view.show_system_fields);
 
-  const baseModel = await Model.getBaseModelSQL({
+  const baseModel = await Model.getBaseModelSQL(context, {
     id: view.model.id,
     viewId: view?.id,
     dbDriver: await NcConnectionMgrv2.get(source),
   });
 
-  const { offset, dbRows, elapsed } = await getDbRows({
+  const { offset, dbRows, elapsed } = await getDbRows(context, {
     baseModel,
     view,
     siteUrl: (req as any).ncSiteUrl,
@@ -83,12 +88,12 @@ export async function extractXlsxData(view: View, req) {
   return { offset, dbRows, elapsed, data };
 }
 
-export async function extractCsvData(view: View, req) {
-  const source = await Source.get(view.source_id);
+export async function extractCsvData(context: NcContext, view: View, req) {
+  const source = await Source.get(context, view.source_id);
   const fields = req.query.fields;
 
-  await view.getModelWithInfo();
-  await view.getColumns();
+  await view.getModelWithInfo(context);
+  await view.getColumns(context);
 
   view.model.columns = view.columns
     .filter((c) => c.show)
@@ -98,13 +103,13 @@ export async function extractCsvData(view: View, req) {
     )
     .filter((column) => !isSystemColumn(column) || view.show_system_fields);
 
-  const baseModel = await Model.getBaseModelSQL({
+  const baseModel = await Model.getBaseModelSQL(context, {
     id: view.model.id,
     viewId: view?.id,
     dbDriver: await NcConnectionMgrv2.get(source),
   });
 
-  const { offset, dbRows, elapsed } = await getDbRows({
+  const { offset, dbRows, elapsed } = await getDbRows(context, {
     baseModel,
     view,
     query: req.query,
@@ -136,15 +141,18 @@ export async function extractCsvData(view: View, req) {
   return { offset, dbRows, elapsed, data };
 }
 
-export async function serializeCellValue({
-  value,
-  column,
-  siteUrl,
-}: {
-  column?: Column;
-  value: any;
-  siteUrl: string;
-}) {
+export async function serializeCellValue(
+  context: NcContext,
+  {
+    value,
+    column,
+    siteUrl,
+  }: {
+    column?: Column;
+    value: any;
+    siteUrl: string;
+  },
+) {
   if (!column) {
     return value;
   }
@@ -158,12 +166,19 @@ export async function serializeCellValue({
         if (typeof value === 'string') {
           data = JSON.parse(value);
         }
-      } catch {}
+
+        if (!Array.isArray(data)) {
+          data = [data];
+        }
+      } catch {
+        data = undefined;
+      }
 
       return (data || [])
+        .filter((attachment) => attachment)
         .map(
           (attachment) =>
-            `${encodeURI(attachment.title)}(${encodeURI(
+            `${attachment.title || 'Attachment'}(${encodeURI(
               attachment.signedPath
                 ? `${siteUrl}/${attachment.signedPath}`
                 : attachment.signedUrl,
@@ -187,12 +202,12 @@ export async function serializeCellValue({
     }
     case UITypes.Lookup:
       {
-        const colOptions = await column.getColOptions<LookupColumn>();
-        const lookupColumn = await colOptions.getLookupColumn();
+        const colOptions = await column.getColOptions<LookupColumn>(context);
+        const lookupColumn = await colOptions.getLookupColumn(context);
         return (
           await Promise.all(
             [...(Array.isArray(value) ? value : [value])].map(async (v) =>
-              serializeCellValue({
+              serializeCellValue(context, {
                 value: v,
                 column: lookupColumn,
                 siteUrl,
@@ -205,9 +220,9 @@ export async function serializeCellValue({
     case UITypes.LinkToAnotherRecord:
       {
         const colOptions =
-          await column.getColOptions<LinkToAnotherRecordColumn>();
-        const relatedModel = await colOptions.getRelatedTable();
-        await relatedModel.getColumns();
+          await column.getColOptions<LinkToAnotherRecordColumn>(context);
+        const relatedModel = await colOptions.getRelatedTable(context);
+        await relatedModel.getColumns(context);
         return [...(Array.isArray(value) ? value : [value])]
           .map((v) => {
             return v[relatedModel.displayValue?.title];
@@ -215,6 +230,19 @@ export async function serializeCellValue({
           .join(', ');
       }
       break;
+    case UITypes.Decimal:
+      {
+        if (isNaN(Number(value))) return null;
+
+        return Number(value).toFixed(column.meta?.precision ?? 1);
+      }
+      break;
+    case UITypes.Duration: {
+      if (column.meta?.duration === undefined) {
+        return value;
+      }
+      return convertMS2Duration(value, column.meta.duration);
+    }
     default:
       if (value && typeof value === 'object') {
         return JSON.stringify(value);
@@ -224,10 +252,11 @@ export async function serializeCellValue({
 }
 
 export async function getColumnByIdOrName(
+  context: NcContext,
   columnNameOrId: string,
   model: Model,
 ) {
-  const column = (await model.getColumns()).find(
+  const column = (await model.getColumns(context)).find(
     (c) =>
       c.title === columnNameOrId ||
       c.id === columnNameOrId ||
@@ -239,12 +268,15 @@ export async function getColumnByIdOrName(
   return column;
 }
 
-export async function getDbRows(param: {
-  baseModel: BaseModelSqlv2;
-  view: View;
-  query: any;
-  siteUrl: string;
-}) {
+export async function getDbRows(
+  context: NcContext,
+  param: {
+    baseModel: BaseModelSqlv2;
+    view: View;
+    query: any;
+    siteUrl: string;
+  },
+) {
   const { baseModel, view, query = {}, siteUrl } = param;
   let offset = +query.offset || 0;
   const limit = 100;
@@ -269,7 +301,7 @@ export async function getDbRows(param: {
       temp = process.hrtime(startTime),
       elapsed = temp[0] * 1000 + temp[1] / 1000000
   ) {
-    const { ast, dependencyFields } = await getAst({
+    const { ast, dependencyFields } = await getAst(context, {
       query: query,
       includePkByDefault: false,
       model: view.model,
@@ -292,7 +324,7 @@ export async function getDbRows(param: {
 
       for (const column of view.model.columns) {
         if (isSystemColumn(column) && !view.show_system_fields) continue;
-        dbRow[column.title] = await serializeCellValue({
+        dbRow[column.title] = await serializeCellValue(context, {
           value: row[column.title],
           column,
           siteUrl,

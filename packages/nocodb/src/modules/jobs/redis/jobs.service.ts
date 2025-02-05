@@ -1,9 +1,20 @@
 import { InjectQueue } from '@nestjs/bull';
 import { Injectable, Logger } from '@nestjs/common';
 import { Queue } from 'bull';
+import type { JobOptions } from 'bull';
 import type { OnModuleInit } from '@nestjs/common';
-import { InstanceCommands, JOBS_QUEUE, JobStatus } from '~/interface/Jobs';
+import {
+  InstanceCommands,
+  JOBS_QUEUE,
+  JobStatus,
+  JobTypes,
+  JobVersions,
+  SKIP_STORING_JOB_META,
+} from '~/interface/Jobs';
 import { JobsRedis } from '~/modules/jobs/redis/jobs-redis';
+import { Job } from '~/models';
+import { MetaTable, RootScopes } from '~/utils/globals';
+import Noco from '~/Noco';
 
 @Injectable()
 export class JobsService implements OnModuleInit {
@@ -13,6 +24,10 @@ export class JobsService implements OnModuleInit {
 
   // pause primary instance queue
   async onModuleInit() {
+    if (process.env.NC_WORKER_CONTAINER === 'false') {
+      await this.jobsQueue.pause(true);
+    }
+
     await this.toggleQueue();
 
     JobsRedis.workerCallbacks[InstanceCommands.RESUME_LOCAL] = async () => {
@@ -23,12 +38,15 @@ export class JobsService implements OnModuleInit {
       this.logger.log('Pausing local queue');
       await this.jobsQueue.pause(true);
     };
+
+    await this.add(JobTypes.InitMigrationJobs, {});
   }
 
   async toggleQueue() {
-    if (process.env.NC_WORKER_CONTAINER === 'false') {
-      await this.jobsQueue.pause(true);
-    } else if (process.env.NC_WORKER_CONTAINER !== 'true') {
+    if (
+      process.env.NC_WORKER_CONTAINER !== 'true' &&
+      process.env.NC_WORKER_CONTAINER !== 'false'
+    ) {
       // resume primary instance queue if there is no worker
       const workerCount = await JobsRedis.workerCount();
       const localWorkerPaused = await this.jobsQueue.isPaused(true);
@@ -43,12 +61,73 @@ export class JobsService implements OnModuleInit {
     }
   }
 
-  async add(name: string, data: any) {
+  async add(name: string, data: any, options?: JobOptions) {
     await this.toggleQueue();
 
-    const job = await this.jobsQueue.add(name, data);
+    const context = {
+      workspace_id: RootScopes.ROOT,
+      base_id: RootScopes.ROOT,
+      ...(data?.context || {}),
+    };
 
-    return job;
+    let jobData;
+
+    if (options?.jobId) {
+      const existingJob = await Job.get(context, options.jobId);
+      if (existingJob) {
+        jobData = existingJob;
+
+        if (existingJob.status !== JobStatus.WAITING) {
+          await Job.update(context, existingJob.id, {
+            status: JobStatus.WAITING,
+          });
+        }
+      } else {
+        if (SKIP_STORING_JOB_META.includes(name as JobTypes)) {
+          jobData = {
+            id: options.jobId,
+          };
+        } else {
+          jobData = await Job.insert(context, {
+            id: `${options.jobId}`,
+            job: name,
+            status: JobStatus.WAITING,
+            fk_user_id: data?.user?.id,
+          });
+        }
+      }
+    }
+
+    if (!jobData) {
+      if (SKIP_STORING_JOB_META.includes(name as JobTypes)) {
+        jobData = {
+          id: await Noco.ncMeta.genNanoid(MetaTable.JOBS),
+        };
+      } else {
+        jobData = await Job.insert(context, {
+          job: name,
+          status: JobStatus.WAITING,
+          fk_user_id: data?.user?.id,
+        });
+      }
+    }
+
+    if (!data) {
+      data = {};
+    }
+
+    data.jobName = name;
+
+    if (JobVersions?.[name]) {
+      data._jobVersion = JobVersions[name];
+    }
+
+    await this.jobsQueue.add(data, {
+      jobId: jobData.id,
+      ...options,
+    });
+
+    return jobData;
   }
 
   async jobStatus(jobId: string) {
@@ -65,30 +144,6 @@ export class JobsService implements OnModuleInit {
       JobStatus.DELAYED,
       JobStatus.PAUSED,
     ]);
-  }
-
-  async getJobWithData(data: any) {
-    const jobs = await this.jobsQueue.getJobs([
-      // 'completed',
-      JobStatus.WAITING,
-      JobStatus.ACTIVE,
-      JobStatus.DELAYED,
-      // 'failed',
-      JobStatus.PAUSED,
-    ]);
-
-    const job = jobs.find((j) => {
-      for (const key in data) {
-        if (j.data[key]) {
-          if (j.data[key] !== data[key]) return false;
-        } else {
-          return false;
-        }
-      }
-      return true;
-    });
-
-    return job;
   }
 
   async resumeQueue() {

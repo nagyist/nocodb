@@ -145,13 +145,7 @@ const formulaDataByDbType = (context: NcContext, index: number) => {
       },
       {
         formula: 'URLENCODE({City})',
-        result: [
-          'A%20Corua%20(La%20Corua)',
-          'Abha',
-          'Abu%20Dhabi',
-          'Acua',
-          'Adana',
-        ],
+        result: ['A%20Corua%20(La%20Corua)', 'Abha', 'Abu%20Dhabi', 'Acua', 'Adana'],
       },
     ];
   else
@@ -264,7 +258,6 @@ test.describe('Virtual Columns', () => {
     // close 'Team & Auth' tab
     const formulaData = formulaDataByDbType(context, index);
     const dbType = context.base.sources[0].type;
-    await dashboard.closeTab({ title: 'Team & Auth' });
 
     await dashboard.treeView.openTable({ title: 'City' });
     // Create dummy formula column which will then be updated for every testcase
@@ -295,8 +288,6 @@ test.describe('Virtual Columns', () => {
         });
       }
     }
-
-    await dashboard.closeTab({ title: 'City' });
   }
 
   test('Formula - suite 0', async () => {
